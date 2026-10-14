@@ -1,0 +1,8 @@
+.DS_Store
+main.lua.bak
+.venv/
+__pycache__/
+*.pyc
+aichatbot_cfg_*.json
+aichatbot_memory_*.json
+aichatbot_log_*.txt
