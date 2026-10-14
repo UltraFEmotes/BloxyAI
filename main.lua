@@ -1578,35 +1578,53 @@ end)
 -- Speech synthesis is played by the paired local helper into a virtual device.
 Speech={session=HttpService:GenerateGUID(false),generation=0,serial=0,queue={},busy=false,
     queued=0,errors=0,lastError="None",connection=nil,lastJob=nil,pending={}}
-function Speech.bridgeSettings()
-    local url=Trim(Cfg.TTSBridgeURL):gsub("/+$","")
+function Speech.bridgeSettings(settings)
+    settings=settings or Cfg
+    local url=Trim(settings.TTSBridgeURL):gsub("/+$","")
     local host,port=url:match("^http://([%w%.%-]+):(%d+)$")
     if (host~="127.0.0.1" and host~="localhost") or not port or tonumber(port)<1 or tonumber(port)>65535 then
         return nil,"Use a local helper URL such as http://127.0.0.1:8765."
     end
-    local key=Trim(Cfg.TTSBridgeKey)
+    local key=Trim(settings.TTSBridgeKey)
     if key=="" then return nil,"Start the voice helper and paste its pairing key in Voice Output." end
     return {url=url,key=key}
 end
-function Speech.providerKey()
+function Speech.providerKey(settings)
+    settings=settings or Cfg
     local fields={openai="TTSOpenAIKey",elevenlabs="TTSElevenLabsKey",custom="TTSCustomKey"}
-    return Cfg[fields[Cfg.TTSProvider]] or ""
+    return settings[fields[settings.TTSProvider]] or ""
 end
-function Speech.settings()
-    return {provider=Cfg.TTSProvider,endpoint=Cfg.TTSEndpoint,key=Speech.providerKey(),
-        model=Cfg.TTSModel,voice=Cfg.TTSVoice,models_path=Cfg.TTSModelsPath,voices_path=Cfg.TTSVoicesPath,
-        audio_format=Cfg.TTSFormat,pcm_rate=Cfg.TTSPcmRate,device=Cfg.TTSDevice,volume=Cfg.TTSVolume}
+function Speech.settings(settings)
+    settings=settings or Cfg
+    return {provider=settings.TTSProvider,endpoint=settings.TTSEndpoint,key=Speech.providerKey(settings),
+        model=settings.TTSModel,voice=settings.TTSVoice,models_path=settings.TTSModelsPath,voices_path=settings.TTSVoicesPath,
+        audio_format=settings.TTSFormat,pcm_rate=settings.TTSPcmRate,device=settings.TTSDevice,volume=settings.TTSVolume}
 end
-function Speech.signature()
+function Speech.signature(settings)
+    settings=settings or Cfg
     local parts={}
     for _,key in ipairs({"TTSProvider","TTSEndpoint","TTSOpenAIKey", "TTSElevenLabsKey", "TTSCustomKey","TTSModel","TTSVoice","TTSModelsPath","TTSVoicesPath","TTSFormat","TTSPcmRate","TTSDevice","TTSVolume","TTSBridgeURL","TTSBridgeKey"}) do
-        local value=tostring(Cfg[key]); table.insert(parts,#value..":"..value)
+        local value=tostring(settings[key]); table.insert(parts,#value..":"..value)
     end
     return table.concat(parts,"|")
 end
-function Speech.call(route,payload,connection)
+function Speech.validateSettings(settings)
+    settings=settings or Cfg
+    local connection,err=Speech.bridgeSettings(settings)
+    if not connection then return err end
+    local key=Trim(Speech.providerKey(settings))
+    if settings.TTSProvider~="custom" and (key=="" or key:match("^YOUR_")) then return "Enter the selected TTS provider’s API key." end
+    if Trim(settings.TTSDevice)=="" or Trim(settings.TTSModel)=="" or Trim(settings.TTSVoice)=="" then
+        return "Select a TTS model, voice and output device first."
+    end
+    if settings.TTSProvider=="custom" and not Trim(settings.TTSEndpoint):match("^https?://[^/]+") then
+        return "Enter your custom TTS endpoint, starting with http:// or https://."
+    end
+end
+function Speech.call(route,payload,connection,settings)
+    settings=settings or Cfg
     local err
-    if not connection then connection,err=Speech.bridgeSettings() end
+    if not connection then connection,err=Speech.bridgeSettings(settings) end
     if not connection then return nil,err end
     local headers={Authorization="Bearer "..connection.key,["Content-Type"]="application/json"}
     local body=payload and HttpService:JSONEncode(payload) or nil
@@ -1616,7 +1634,8 @@ function Speech.call(route,payload,connection)
     if not ok or type(data)~="table" then return nil,"Voice helper returned invalid JSON. Check its URL and restart it." end
     if response.StatusCode<200 or response.StatusCode>=300 then
         local detail=type(data.error)=="string" and data.error or "Voice helper request failed."
-        for _,secret in ipairs({Cfg.TTSOpenAIKey,Cfg.TTSElevenLabsKey,Cfg.TTSCustomKey,connection.key}) do
+        for _,secret in ipairs({settings.TTSOpenAIKey,settings.TTSElevenLabsKey,settings.TTSCustomKey,connection.key,
+            payload and payload.settings and payload.settings.key or ""}) do
             if secret~="" then detail=detail:gsub(secret:gsub("([^%w])","%%%1"),"[redacted]") end
         end
         return nil,Truncate(detail,400)
@@ -1642,12 +1661,13 @@ function Speech.report(errorText)
     if Speech.onStatus then pcall(Speech.onStatus,Speech.lastError) end
     SafeNotify({Title="Voice output",Content=Speech.lastError,Duration=8})
 end
-function Speech.enqueue(text,item,test)
+function Speech.enqueue(text,item,test,settings)
+    settings=settings or Cfg
     if not Runtime.alive then return false,"Bot unloaded." end
-    if not test and (not Cfg.TTSEnabled or item.private and not Cfg.TTSPrivate or Cfg.WhisperMode and not Cfg.TTSPrivate) then return false end
-    local connection,err=Speech.bridgeSettings()
+    if not test and (not settings.TTSEnabled or item.private and not settings.TTSPrivate or settings.WhisperMode and not settings.TTSPrivate) then return false end
+    local connection,err=Speech.bridgeSettings(settings)
     if not connection then return false,err end
-    if Trim(Cfg.TTSModel)=="" or Trim(Cfg.TTSVoice)=="" or Trim(Cfg.TTSDevice)=="" then
+    if Trim(settings.TTSModel)=="" or Trim(settings.TTSVoice)=="" or Trim(settings.TTSDevice)=="" then
         return false,"Select a TTS model, voice and helper output device first."
     end
     if #Speech.queue>=8 then return false,"Voice queue is full. Stop speech or wait for playback." end
@@ -1655,7 +1675,7 @@ function Speech.enqueue(text,item,test)
     local generation=Speech.generation
     local id=tostring(Speech.serial)
     table.insert(Speech.queue,{connection=connection,payload={session=Speech.session,id=id,generation=generation,
-        text=Truncate(ParseAIText(text),4096),disclose=not item.private and not test,settings=Speech.settings()},created=os.clock(),generation=generation})
+        text=Truncate(ParseAIText(text),4096),disclose=not item.private and not test,settings=Speech.settings(settings)},created=os.clock(),generation=generation})
     Speech.lastJob=id
     if Speech.busy then return true end
     Speech.busy=true
@@ -1939,8 +1959,218 @@ local C = {
     RED=Color3.fromRGB(255,151,142),
 }
 
+-- Shared voice controls keep initial setup and the live panel on the same flow.
+local function BuildVoiceOutputControls(tab,cfg,options)
+    options=options or {}
+    local state={updating=false,loading=false,models={},voices={},devices={}}
+    local modelPicker,voicePicker,modelInput,voiceInput,keyInput,devicePicker,status,enableToggle
+    local function active() return Runtime.alive and (not options.active or options.active()) end
+    local function persist()
+        if cfg.TTSEnabled and Speech.validateSettings(cfg) then cfg.TTSEnabled=false end
+        if enableToggle then enableToggle:Set(cfg.TTSEnabled,true) end
+        if options.save then options.save() end
+    end
+    local providerLabels={openai="OpenAI",elevenlabs="ElevenLabs",custom="Custom (OpenAI-compatible)"}
+    local keyFields={openai="TTSOpenAIKey",elevenlabs="TTSElevenLabsKey",custom="TTSCustomKey"}
+    local platform="macos"
+    local guides={
+        macos="1. Install BlackHole 2ch: github.com/ExistentialAudio/BlackHole\n2. Run voice/start-macos.command (Python 3.10+). Keep its terminal open.\n3. Paste the helper pairing key below and check the helper.\n4. Choose BlackHole 2ch as the helper output AND Roblox's microphone input. Keep game audio on headphones.\n5. Choose a TTS provider, model and voice. Test the voice, then enable spoken replies.",
+        windows="1. Install VB-CABLE: vb-audio.com/Cable — restart Windows.\n2. Run voice\\start-windows.cmd (Python 3.10+). Keep its terminal open.\n3. Paste the helper pairing key below and check the helper.\n4. Choose CABLE Input as the helper output and CABLE Output as Roblox's microphone input. Keep game audio on headphones.\n5. Choose a TTS provider, model and voice. Test the voice, then enable spoken replies.",
+    }
+    tab:CreateSection({name="1 · Route audio to voice chat"})
+    local guide=tab:CreateText({name="macOS · BlackHole setup",text=guides.macos})
+    local platformPicker=tab:CreateDropdown({name="Voice setup platform",options={"macOS (BlackHole)","Windows (VB-CABLE)"},value="macOS (BlackHole)",multiSelect=false,forgetState=true,callback=function(value)
+        platform=value=="Windows (VB-CABLE)" and "windows" or "macos"
+        guide:SetTitle(platform=="macos" and "macOS · BlackHole setup" or "Windows · VB-CABLE setup"); guide:Set(guides[platform])
+    end})
+    local function setStatus(text) if status and active() then status:Set(text) end end
+    Speech.onStatus=setStatus
+    local function stopSpeech()
+        Speech.cancel()
+        setStatus("Speech stopped. Text replies continue normally.")
+    end
+    local function changed()
+        stopSpeech(); persist()
+        if enableToggle then enableToggle:Set(cfg.TTSEnabled,true) end
+    end
+    tab:CreateInput({name="Voice helper URL",value=cfg.TTSBridgeURL,placeholder="http://127.0.0.1:8765",forgetState=true,callback=function(value)
+        local old=cfg.TTSBridgeURL; cfg.TTSBridgeURL=Trim(value)
+        local _,err=Speech.bridgeSettings(cfg)
+        if err and not err:find("pairing key",1,true) then cfg.TTSBridgeURL=old; SafeNotify({Title="Invalid helper URL",Content=err}); return end
+        cfg.TTSBridgeURL=old; stopSpeech(); cfg.TTSBridgeURL=Trim(value); Speech.connection=nil; persist()
+    end})
+    tab:CreateInput({name="Helper pairing key",placeholder=cfg.TTSBridgeKey~="" and "Key set · re-enter to update" or "Paste the key printed by the helper",forgetState=true,callback=function(value)
+        stopSpeech(); cfg.TTSBridgeKey=Trim(value); Speech.connection=nil; persist()
+    end})
+    devicePicker=tab:CreateDropdown({name="Speech output device",options=cfg.TTSDevice~="" and {cfg.TTSDevice} or {},value=cfg.TTSDevice~="" and cfg.TTSDevice or nil,multiSelect=false,forgetState=true,callback=function(value)
+        if state.updating or not state.devices[value] then return end
+        cfg.TTSDevice=state.devices[value]; changed()
+    end})
+    tab:CreateButton({name="Check helper / Refresh output devices",callback=function()
+        task.spawn(function()
+            local signature=cfg.TTSBridgeURL.."\0"..cfg.TTSBridgeKey
+            local connection,err=Speech.bridgeSettings(cfg)
+            if not connection then setStatus(err); SafeNotify({Title="Voice helper",Content=err}); return end
+            local health,healthError=Speech.call("/v1/status?session="..Speech.session,nil,connection,cfg)
+            if not active() or signature~=cfg.TTSBridgeURL.."\0"..cfg.TTSBridgeKey then return end
+            if not health or health.service~="aichatbot-voice" then
+                local detail=healthError or "That URL is not the AI Chat Bot voice helper."
+                setStatus(detail); SafeNotify({Title="Voice helper unavailable",Content=detail}); return
+            end
+            local result,deviceError=Speech.call("/v1/devices",nil,connection,cfg)
+            if not active() or signature~=cfg.TTSBridgeURL.."\0"..cfg.TTSBridgeKey then return end
+            if not result then setStatus(deviceError); return end
+            local choices={}; state.devices={}
+            for _,device in ipairs(type(result.devices)=="table" and result.devices or {}) do
+                if type(device.id)=="string" and type(device.name)=="string" then
+                    local label=device.id..(device.virtual and " · virtual mic" or " · speakers/headphones")
+                    table.insert(choices,label); state.devices[label]=device.id
+                end
+            end
+            state.updating=true; devicePicker:Refresh(choices)
+            for label,id in pairs(state.devices) do if id==cfg.TTSDevice then devicePicker:Set(label,true) end end
+            state.updating=false
+            if health.platform=="macos" or health.platform=="windows" then
+                platform=health.platform; platformPicker:Set(platform=="macos" and "macOS (BlackHole)" or "Windows (VB-CABLE)",true)
+                guide:SetTitle(platform=="macos" and "macOS · BlackHole setup" or "Windows · VB-CABLE setup"); guide:Set(guides[platform])
+            end
+            setStatus("Helper connected · "..#choices.." output devices. Choose the virtual audio device, then set up your provider.")
+        end)
+    end})
+    status=tab:CreateText({name="Voice output status",text="Start the helper, paste its pairing key and check the connection. Voice output is off by default."})
+    tab:CreateSection({name="2 · Choose a speech provider"})
+    local function clearCatalog()
+        state.models={}; state.voices={}; state.updating=true
+        modelPicker:Refresh({}); voicePicker:Refresh({}); state.updating=false
+        setStatus("Fetch the speech catalog for this connection. Manual model/voice IDs are available below.")
+    end
+    tab:CreateDropdown({name="TTS provider",options={"OpenAI","ElevenLabs","Custom (OpenAI-compatible)"},value=providerLabels[cfg.TTSProvider],multiSelect=false,forgetState=true,callback=function(value)
+        local selected
+        for id,label in pairs(providerLabels) do if label==value then selected=id end end
+        if not selected or selected==cfg.TTSProvider then return end
+        stopSpeech(); cfg.TTSProvider=selected; cfg.TTSEnabled=false
+        if enableToggle then enableToggle:Set(false,true) end
+        cfg.TTSModel=selected=="openai" and "gpt-4o-mini-tts" or ""; cfg.TTSVoice=selected=="openai" and "coral" or ""
+        state.updating=true; modelInput:Set(cfg.TTSModel,true); voiceInput:Set(cfg.TTSVoice,true); keyInput:Set("",true); state.updating=false
+        persist(); clearCatalog()
+    end})
+    keyInput=tab:CreateInput({name="TTS provider API key",placeholder="Optional for custom/local TTS · keys stay separate from chat",forgetState=true,callback=function(value)
+        cfg[keyFields[cfg.TTSProvider]]=Trim(value); changed(); clearCatalog()
+    end})
+    tab:CreateInput({name="Custom TTS endpoint / base URL",value=cfg.TTSEndpoint,placeholder="https://speech.example/v1 or full /audio/speech URL",forgetState=true,callback=function(value)
+        cfg.TTSEndpoint=Trim(value); changed(); clearCatalog()
+    end})
+    tab:CreateInput({name="TTS model-list URL / path (optional)",value=cfg.TTSModelsPath,placeholder="Auto /v1/models · /models · full URL",forgetState=true,callback=function(value)
+        cfg.TTSModelsPath=Trim(value); changed(); clearCatalog()
+    end})
+    tab:CreateInput({name="TTS voice-list URL / path (optional)",value=cfg.TTSVoicesPath,placeholder="Auto /v1/voices · /voices · full URL",forgetState=true,callback=function(value)
+        cfg.TTSVoicesPath=Trim(value); changed(); clearCatalog()
+    end})
+    local storageToggle=tab:CreateToggle({name="Remember voice API keys on this device",value=cfg.SaveAPIKeys,description="Applies to all saved API keys and helper pairing. Stored keys are plain text; leave off for this session only.",forgetState=true,callback=function(value)
+        cfg.SaveAPIKeys=value; persist()
+        if options.onKeyStorage then options.onKeyStorage() end
+    end})
+    tab:CreateText({name="Speech-only models",text="The catalog lists dedicated TTS models. Chat, transcription and voice-conversion-only models are excluded. Custom servers without capability metadata can use a manual TTS ID and voice ID; Test selected voice verifies speech generation."})
+    tab:CreateSection({name="3 · Pick a TTS model and voice"})
+    local function openaiVoices()
+        if cfg.TTSProvider~="openai" then return end
+        local values=cfg.TTSModel=="tts-1" or cfg.TTSModel=="tts-1-hd"
+        values=values and {"alloy","ash","coral","echo","fable","nova","onyx","sage","shimmer"} or {"alloy","ash","ballad","coral","echo","fable","nova","onyx","sage","shimmer","verse","marin","cedar"}
+        state.voices={}; state.updating=true; voicePicker:Refresh(values)
+        for _,voice in ipairs(values) do state.voices[voice]=voice end
+        if not state.voices[cfg.TTSVoice] then cfg.TTSVoice="coral" end
+        voicePicker:Set(cfg.TTSVoice,true); voiceInput:Set(cfg.TTSVoice,true); state.updating=false
+    end
+    modelPicker=tab:CreateDropdown({name="TTS models",options={},multiSelect=false,forgetState=true,callback=function(value)
+        if state.updating or not state.models[value] then return end
+        cfg.TTSModel=state.models[value]; modelInput:Set(cfg.TTSModel,true); openaiVoices(); changed()
+    end})
+    voicePicker=tab:CreateDropdown({name="TTS voices",options={},multiSelect=false,forgetState=true,callback=function(value)
+        if state.updating or not state.voices[value] then return end
+        cfg.TTSVoice=state.voices[value]; voiceInput:Set(cfg.TTSVoice,true); changed()
+    end})
+    modelInput=tab:CreateInput({name="Manual TTS model ID",value=cfg.TTSModel,placeholder="Exact speech model ID",forgetState=true,callback=function(value)
+        cfg.TTSModel=Trim(value); openaiVoices(); changed()
+    end})
+    voiceInput=tab:CreateInput({name="Manual TTS voice ID",value=cfg.TTSVoice,placeholder="Voice name or provider voice ID",forgetState=true,callback=function(value)
+        cfg.TTSVoice=Trim(value); changed()
+    end})
+    tab:CreateButton({name="Fetch / Refresh TTS models and voices",callback=function()
+        if state.loading then return end
+        state.loading=true; local signature=Speech.signature(cfg)
+        setStatus("Fetching speech-only models and voices…")
+        task.spawn(function()
+            local result,err=Speech.call("/v1/catalog",{settings=Speech.settings(cfg)},nil,cfg)
+            state.loading=false
+            if not active() or signature~=Speech.signature(cfg) then return end
+            if not result then setStatus(err); SafeNotify({Title="TTS catalog failed",Content=err}); return end
+            state.models={}; state.voices={}; local models,voices={},{}
+            for _,model in ipairs(type(result.models)=="table" and result.models or {}) do
+                if type(model.id)=="string" and model.id~="" then table.insert(models,model.id); state.models[model.id]=model.id end
+            end
+            for _,voice in ipairs(type(result.voices)=="table" and result.voices or {}) do
+                if type(voice.id)=="string" and voice.id~="" then
+                    local label=voice.name and voice.name~=voice.id and voice.name.." · "..voice.id or voice.id
+                    table.insert(voices,label); state.voices[label]=voice.id
+                end
+            end
+            state.updating=true; modelPicker:Refresh(models); voicePicker:Refresh(voices)
+            if state.models[cfg.TTSModel] then modelPicker:Set(cfg.TTSModel,true) end
+            for label,id in pairs(state.voices) do if id==cfg.TTSVoice then voicePicker:Set(label,true) end end
+            state.updating=false; openaiVoices()
+            setStatus(#models.." TTS models · "..#voices.." voices. "..(result.note or "Select a model and voice, then test playback."))
+        end)
+    end})
+    tab:CreateDropdown({name="Custom speech audio format",options={"WAV","PCM (16-bit little-endian)"},value=cfg.TTSFormat=="pcm" and "PCM (16-bit little-endian)" or "WAV",multiSelect=false,forgetState=true,callback=function(value)
+        cfg.TTSFormat=value=="WAV" and "wav" or "pcm"; changed()
+    end})
+    local rates={"16000","22050","24000","44100","48000"}
+    tab:CreateDropdown({name="Custom PCM sample rate",options=rates,value=tostring(cfg.TTSPcmRate),multiSelect=false,forgetState=true,callback=function(value)
+        if not table.find(rates,value) then return end
+        cfg.TTSPcmRate=tonumber(value); changed()
+    end})
+    tab:CreateSlider({name="Speech volume",range={0,100},increment=5,value=math.round(cfg.TTSVolume*100),forgetState=true,callback=function(value)
+        cfg.TTSVolume=value/100; changed()
+    end})
+    tab:CreateSection({name="4 · Test and enable voice output"})
+    tab:CreateButton({name="Test selected voice",callback=function()
+        local ok,err=Speech.enqueue("This is an AI-generated voice. Your chatbot's speech output is ready.",{private=true},true,cfg)
+        if ok then setStatus("Voice test queued. Check that Roblox uses the matching virtual microphone, then refresh speech status.")
+        else setStatus(err); SafeNotify({Title="Voice test failed",Content=err}) end
+    end})
+    enableToggle=tab:CreateToggle({name="Speak public AI replies",value=cfg.TTSEnabled,forgetState=true,callback=function(value)
+        if value then
+            local err=Speech.validateSettings(cfg)
+            if err then
+                cfg.TTSEnabled=false; enableToggle:Set(false,true); persist(); setStatus(err)
+                SafeNotify({Title="Finish voice setup",Content=err}); return
+            end
+        else stopSpeech() end
+        cfg.TTSEnabled=value; persist(); setStatus(value and "Voice enabled. Public AI replies will be spoken through the selected device." or "Voice disabled.")
+    end})
+    tab:CreateToggle({name="Also speak private / local-preview replies",value=cfg.TTSPrivate,description="These replies will be audible through the selected voice-chat microphone.",forgetState=true,callback=function(value)
+        cfg.TTSPrivate=value; changed()
+    end})
+    tab:CreateButton({name="Stop current / queued speech",callback=stopSpeech})
+    tab:CreateButton({name="Refresh speech status",callback=function()
+        task.spawn(function()
+            local data,err=Speech.call("/v1/status?session="..Speech.session,nil,nil,cfg)
+            if not active() then return end
+            if not data then setStatus(err); return end
+            local stats=type(data.stats)=="table" and data.stats or {}
+            local latest=type(data.jobs)=="table" and data.jobs[#data.jobs]
+            setStatus(string.format("%s · Queue: %d · Played: %d · Errors: %d\nLatest speech: %s\nLast error: %s",data.active and "Speaking / preparing audio" or "Idle",data.queue or 0,stats.played or 0,stats.errors or 0,latest and latest.state or "None",stats.last_error~="" and stats.last_error or Speech.lastError))
+        end)
+    end})
+    tab:CreateText({name="What gets spoken",text="Public replies are spoken after chat accepts the message. Private chats and local previews stay silent unless their toggle is on. The first public speech announces that the voice is AI-generated. Speech failures never erase a text reply. Pausing the bot, changing voice settings, stopping speech or unloading cancels queued playback."})
+    return {refresh=function()
+        storageToggle:Set(cfg.SaveAPIKeys,true); enableToggle:Set(cfg.TTSEnabled,true)
+    end}
+end
+
 local function RunSetupWizard()
     local draft=table.clone(Cfg)
+    local voiceControls
     local provider=PROVIDERS[1]
     for _,entry in ipairs(PROVIDERS) do if entry.id==draft.Provider then provider=entry; break end end
     local modelId=draft.Model
@@ -1959,6 +2189,7 @@ local function RunSetupWizard()
     local function finish(cancelled)
         if closed then return end
         closed=true
+        Speech.cancel()
         if cancelled then Runtime.Stop() end
         done:Fire()
     end
@@ -2031,9 +2262,9 @@ local function RunSetupWizard()
     local nav=frame(card,"SetupNavigation",UDim2.new(1,-48,0,44),UDim2.fromOffset(24,78)); nav.BackgroundTransparency=1
     local navButtons={}
     local heading=label(card,"",UDim2.new(1,-48,0,36),UDim2.fromOffset(24,140),26,C.TEXT,true)
-    local subtitle=label(card,"",UDim2.new(1,-48,0,24),UDim2.fromOffset(24,178),14,C.MUTED)
+    local subtitle=label(card,"",UDim2.new(1,-48,0,36),UDim2.fromOffset(24,178),14,C.MUTED)
     local pages={}
-    for i=1,4 do
+    for i=1,5 do
         pages[i]=frame(card,"SetupPage_"..i,UDim2.new(1,-48,1,-320),UDim2.fromOffset(24,220))
         pages[i].BackgroundTransparency=1; pages[i].Visible=i==1
     end
@@ -2046,6 +2277,8 @@ local function RunSetupWizard()
     local nextButton=button(footer,"SetupContinue","Continue",UDim2.fromOffset(178,42),UDim2.new(1,-202,0,24),true)
     local function updateSummary()
         summary.Text=provider.name.."\n"..(modelId~="" and modelId or "Choose a model").."  ·  Thinking off"
+            .."\n"..(draft.TTSEnabled and "Voice: "..draft.TTSProvider.." · "..draft.TTSVoice or "Voice output off")
+        if step==5 then nextButton.Text=draft.TTSEnabled and "Start bot with voice" or "Start bot · text only" end
     end
 
     -- Provider: searchable, stable tiles, readable capabilities and selected state.
@@ -2287,8 +2520,127 @@ local function RunSetupWizard()
     connect(prompt:GetPropertyChangedSignal("Text"),highlightPreset)
     highlightPreset()
 
-    local titles={"Choose your provider","Connect your provider","Choose a model","Give your bot a voice"}
-    local descriptions={"Pick a service, a local server, or your own endpoint.","Add the connection details for your selected provider.","Select a model from the list or paste its exact ID.","Start from a personality preset, then adjust the prompt and identity."}
+    -- A native adapter lets the optional voice step share the panel's controller.
+    do
+        local voiceScroll=scroll(pages[5],"SetupVoiceForm",UDim2.fromScale(1,1),UDim2.new())
+        local stack=frame(voiceScroll,"SetupVoiceControls",UDim2.new(1,-8,0,0)); stack.BackgroundTransparency=1
+        stack.AutomaticSize=Enum.AutomaticSize.Y
+        local list=Instance.new("UIListLayout"); list.Padding=UDim.new(0,14); list.SortOrder=Enum.SortOrder.LayoutOrder; list.Parent=stack
+        local ui={}; local order=0
+        local function control(options,height)
+            order=order+1
+            local holder=frame(stack,"SetupVoice_"..options.name,UDim2.new(1,0,0,height))
+            holder.BackgroundTransparency=1; holder.LayoutOrder=order
+            return holder
+        end
+        function ui:CreateSection(options)
+            local holder=control(options,32)
+            label(holder,options.name,UDim2.new(1,0,1,0),nil,16,C.ACCENT,true)
+        end
+        function ui:CreateText(options)
+            local holder=control(options,0); holder.AutomaticSize=Enum.AutomaticSize.Y
+            local title=label(holder,options.name,UDim2.new(1,0,0,22),nil,13,C.TEXT,true)
+            local text=label(holder,options.text,UDim2.new(1,-8,0,0),UDim2.fromOffset(0,28),13,C.MUTED)
+            text.AutomaticSize=Enum.AutomaticSize.Y; text.TextYAlignment=Enum.TextYAlignment.Top
+            return {SetTitle=function(_,value) title.Text=value end,Set=function(_,value) text.Text=value end}
+        end
+        function ui:CreateButton(options)
+            local holder=control(options,42)
+            local b=button(holder,holder.Name.."_Button",options.name,UDim2.fromScale(1,1))
+            connect(b.Activated,function() if not closed then options.callback() end end)
+            return b
+        end
+        function ui:CreateInput(options)
+            local holder=control(options,76)
+            label(holder,options.name,UDim2.new(1,0,0,22),nil,13,C.TEXT,true)
+            local secret=options.name:lower():find("key",1,true)~=nil
+            local box=input(holder,holder.Name.."_Input",options.value,options.placeholder,
+                UDim2.new(1,secret and -86 or 0,0,44),UDim2.fromOffset(0,28))
+            local setting=false
+            if secret then
+                local mask=label(box,"",UDim2.new(1,-24,1,0),UDim2.fromOffset(12,0),14,C.TEXT); mask.ZIndex=box.ZIndex+1
+                local show=button(holder,holder.Name.."_Reveal","Show",UDim2.fromOffset(74,44),UDim2.new(1,-74,0,28))
+                local revealed=false
+                local function refreshMask()
+                    box.TextTransparency=not revealed and box.Text~="" and 1 or 0
+                    mask.Text=not revealed and string.rep("•",math.min(24,#box.Text)) or ""
+                    show.Text=revealed and "Hide" or "Show"
+                end
+                connect(show.Activated,function() revealed=not revealed; refreshMask() end)
+                connect(box:GetPropertyChangedSignal("Text"),refreshMask); refreshMask()
+            end
+            -- Validate a helper URL after editing, rather than on each partial URL.
+            local changedSignal=options.name=="Voice helper URL" and box.FocusLost or box:GetPropertyChangedSignal("Text")
+            connect(changedSignal,function()
+                if not setting and not closed and options.callback then options.callback(box.Text) end
+            end)
+            return {Set=function(_,value,skip)
+                setting=true; box.Text=tostring(value or ""); setting=false
+                if not skip and options.callback then options.callback(box.Text) end
+            end}
+        end
+        function ui:CreateDropdown(options)
+            local holder=control(options,76)
+            label(holder,options.name,UDim2.new(1,0,0,22),nil,13,C.TEXT,true)
+            local selected=options.value
+            local b=button(holder,holder.Name.."_Picker",selected or "Choose / refresh choices",UDim2.new(1,0,0,44),UDim2.fromOffset(0,28))
+            b.TextTruncate=Enum.TextTruncate.AtEnd
+            local choices=scroll(holder,holder.Name.."_Choices",UDim2.new(1,0,0,0),UDim2.fromOffset(0,80)); choices.Visible=false
+            local rows={}; local values={}
+            local layout=Instance.new("UIListLayout"); layout.Padding=UDim.new(0,4); layout.SortOrder=Enum.SortOrder.LayoutOrder; layout.Parent=choices
+            local function expand(open)
+                choices.Visible=open and #values>0
+                local height=math.min(180,#values*40)
+                choices.Size=UDim2.new(1,0,0,height); holder.Size=UDim2.new(1,0,0,choices.Visible and 84+height or 76)
+            end
+            local handle={}
+            function handle:Set(value,skip)
+                selected=value; b.Text=value or "Choose / refresh choices"; expand(false)
+                if not skip and options.callback then options.callback(value) end
+            end
+            function handle:Refresh(entries)
+                for _,row in ipairs(rows) do row:Destroy() end
+                rows={}; values=entries
+                if not table.find(values,selected) then selected=nil; b.Text="Choose / refresh choices" end
+                for i,value in ipairs(values) do
+                    local row=button(choices,holder.Name.."_Option_"..value,value,UDim2.new(1,-8,0,36)); row.LayoutOrder=i
+                    row.TextTruncate=Enum.TextTruncate.AtEnd
+                    connect(row.Activated,function() if not closed then handle:Set(value) end end)
+                    table.insert(rows,row)
+                end
+                expand(false)
+            end
+            handle:Refresh(options.options or {}); if options.value then handle:Set(options.value,true) end
+            connect(b.Activated,function() expand(not choices.Visible) end)
+            return handle
+        end
+        function ui:CreateToggle(options)
+            local holder=control(options,options.description and 98 or 42)
+            local value=options.value
+            local b=button(holder,holder.Name.."_Toggle","",UDim2.new(1,0,0,42))
+            b.TextSize=13
+            if options.description then label(holder,options.description,UDim2.new(1,-8,0,48),UDim2.fromOffset(0,48),12,C.MUTED) end
+            local handle={}
+            function handle:Set(nextValue,skip)
+                value=nextValue; b.Text=(value and "✓ " or "○ ")..options.name
+                b.BackgroundColor3=value and C.SELECTED or C.CARD
+                if not skip and options.callback then options.callback(value) end
+            end
+            handle:Set(value,true)
+            connect(b.Activated,function() if not closed then handle:Set(not value) end end)
+            return handle
+        end
+        function ui:CreateSlider(options)
+            return ui:CreateInput({name=options.name.." ("..options.range[1].."–"..options.range[2]..")",value=tostring(options.value),placeholder="Volume percentage",callback=function(value)
+                local amount=tonumber(value)
+                if amount then options.callback(math.clamp(amount,options.range[1],options.range[2])) end
+            end})
+        end
+        voiceControls=BuildVoiceOutputControls(ui,draft,{active=function() return not closed end,save=updateSummary,onKeyStorage=updateRemember})
+    end
+
+    local titles={"Choose your provider","Connect your provider","Choose a model","Give your bot a personality","Set up voice output"}
+    local descriptions={"Pick a service, a local server, or your own endpoint.","Add the connection details for your selected provider.","Select a model from the list or paste its exact ID.","Start from a personality preset, then adjust the prompt and identity.","Optional: pair the helper and choose a speech provider, model and voice, or start with text only."}
     showStep=function(value)
         step=value; errorLabel.Text=""
         for i,page in ipairs(pages) do page.Visible=i==step end
@@ -2298,13 +2650,14 @@ local function RunSetupWizard()
             row.stroke.Transparency=i==step and 0 or 1
         end
         heading.Text=titles[step]; subtitle.Text=descriptions[step]
-        nextButton.Text=step==4 and "Start bot" or "Continue"; back.Visible=step>1
+        nextButton.Text="Continue"; back.Visible=step>1
         if step==2 then refreshConnection() end
         if step==3 then manual.Text=modelId; renderModels(provider.models); refreshModels() end
+        if step==5 then voiceControls.refresh() end
         updateSummary()
     end
-    for i,name in ipairs({"Provider","Connection","Model","Personality"}) do
-        local b,o=button(nav,"SetupNav_"..i,i.."  "..name,UDim2.new(0.25,-6,1,0),UDim2.new((i-1)*0.25,0,0,0))
+    for i,name in ipairs({"Provider","Connection","Model","Personality","Voice Output"}) do
+        local b,o=button(nav,"SetupNav_"..i,i.."  "..name,UDim2.new(0.2,-6,1,0),UDim2.new((i-1)*0.2,0,0,0))
         table.insert(navButtons,{button=b,stroke=o})
         connect(b.Activated,function() if i<=completed then showStep(i) end end)
     end
@@ -2313,15 +2666,17 @@ local function RunSetupWizard()
         if closed then return end
         local err=step>=2 and validateConnection() or nil
         if step>=3 and Trim(modelId)=="" then err="Select a model or enter an exact model ID." end
-        if step==4 and Trim(prompt.Text)=="" then err="Write a system prompt or select a personality preset." end
+        if step>=4 and Trim(prompt.Text)=="" then err="Write a system prompt or select a personality preset." end
+        if step==5 and draft.TTSEnabled then err=Speech.validateSettings(draft) or err end
         if err then errorLabel.Text=err; return end
-        if step<4 then completed=math.max(completed,step+1); showStep(step+1); return end
+        if step<5 then completed=math.max(completed,step+1); showStep(step+1); return end
         local changed=Cfg.Provider~=provider.id or Cfg.Model~=modelId
         Cfg.Provider=provider.id; Cfg.Model=modelId; Cfg.GeminiModel=modelId
         if provider.id=="unclose" then Cfg.UncloseEndpoint=modelId end
         Cfg.CustomEndpoint=draft.CustomEndpoint; Cfg.CustomModelsEndpoint=draft.CustomModelsEndpoint
         Cfg.LMStudioPort=draft.LMStudioPort; Cfg.SaveAPIKeys=draft.SaveAPIKeys
         for _,field in pairs(KEY_MAP) do Cfg[field]=draft[field] end
+        for _,field in ipairs(SAVE_KEYS) do if field:match("^TTS") then Cfg[field]=draft[field] end end
         Cfg.SystemPrompt=prompt.Text; Cfg.BotName=Trim(botName.Text)~="" and Trim(botName.Text) or "AIBot"
         Cfg.Language=Trim(language.Text)~="" and Trim(language.Text) or "Auto"
         Cfg.SetupComplete=true; NormalizeCfg()
@@ -2353,7 +2708,7 @@ local function RunSetupWizard()
             editor.Size=UDim2.new(0.68,0,0,432); editor.Position=UDim2.new(0.32,0,0,0)
             summary.Visible=true
         end
-        for i,row in ipairs(navButtons) do row.button.Text=compact and tostring(i).."  "..({"Provider","Connect","Model","Voice"})[i] or tostring(i).."  "..({"Provider","Connection","Model","Personality"})[i]; row.button.TextSize=compact and 12 or 14 end
+        for i,row in ipairs(navButtons) do row.button.Text=compact and tostring(i).."  "..({"Service","Connect","Model","Profile","Voice"})[i] or tostring(i).."  "..({"Provider","Connection","Model","Personality","Voice Output"})[i]; row.button.TextSize=compact and 12 or 14 end
         for i,name in ipairs(filters) do
             filterButtons[name].button.Size=UDim2.new(0.2,-6,0,32)
             filterButtons[name].button.Position=UDim2.new((i-1)*0.2,0,0,54)
@@ -2432,203 +2787,8 @@ TabGeneral:CreateButton({ name="Export Chat Log", callback=function()
     SafeNotify({Title=ok and "Log Exported" or "Export Failed", Content=ok and ("Saved to "..fn) or fn})
 end })
 
--- ─── Voice Output: guided setup, filtered speech catalog and local playback ───
-local function CreateVoiceOutputTab()
-    local tab=Win:CreateTab({name="Voice Output"})
-    local state={updating=false,loading=false,models={},voices={},devices={}}
-    local modelPicker,voicePicker,modelInput,voiceInput,keyInput,devicePicker,status,enableToggle
-    local providerLabels={openai="OpenAI",elevenlabs="ElevenLabs",custom="Custom (OpenAI-compatible)"}
-    local keyFields={openai="TTSOpenAIKey",elevenlabs="TTSElevenLabsKey",custom="TTSCustomKey"}
-    local platform="macos"
-    local guides={
-        macos="1. Install BlackHole 2ch: github.com/ExistentialAudio/BlackHole\n2. Run voice/start-macos.command (Python 3.10+). Keep its terminal open.\n3. Paste the helper pairing key below and check the helper.\n4. Choose BlackHole 2ch as the helper output AND Roblox's microphone input. Keep game audio on headphones.\n5. Choose a TTS provider, model and voice. Test the voice, then enable spoken replies.",
-        windows="1. Install VB-CABLE: vb-audio.com/Cable — restart Windows.\n2. Run voice\\start-windows.cmd (Python 3.10+). Keep its terminal open.\n3. Paste the helper pairing key below and check the helper.\n4. Choose CABLE Input as the helper output and CABLE Output as Roblox's microphone input. Keep game audio on headphones.\n5. Choose a TTS provider, model and voice. Test the voice, then enable spoken replies.",
-    }
-    tab:CreateSection({name="1 · Route audio to voice chat"})
-    local guide=tab:CreateText({name="macOS · BlackHole setup",text=guides.macos})
-    local platformPicker=tab:CreateDropdown({name="Voice setup platform",options={"macOS (BlackHole)","Windows (VB-CABLE)"},value="macOS (BlackHole)",multiSelect=false,forgetState=true,callback=function(value)
-        platform=value=="Windows (VB-CABLE)" and "windows" or "macos"
-        guide:SetTitle(platform=="macos" and "macOS · BlackHole setup" or "Windows · VB-CABLE setup"); guide:Set(guides[platform])
-    end})
-    local function setStatus(text) if status and Runtime.alive then status:Set(text) end end
-    Speech.onStatus=setStatus
-    local function stopSpeech()
-        Speech.cancel()
-        setStatus("Speech stopped. Text replies continue normally.")
-    end
-    local function changed()
-        stopSpeech(); SaveCfg()
-        if enableToggle then enableToggle:Set(Cfg.TTSEnabled,true) end
-    end
-    tab:CreateInput({name="Voice helper URL",value=Cfg.TTSBridgeURL,placeholder="http://127.0.0.1:8765",forgetState=true,callback=function(value)
-        local old=Cfg.TTSBridgeURL; Cfg.TTSBridgeURL=Trim(value)
-        local _,err=Speech.bridgeSettings()
-        if err and not err:find("pairing key",1,true) then Cfg.TTSBridgeURL=old; SafeNotify({Title="Invalid helper URL",Content=err}); return end
-        Cfg.TTSBridgeURL=old; stopSpeech(); Cfg.TTSBridgeURL=Trim(value); Speech.connection=nil; SaveCfg()
-    end})
-    tab:CreateInput({name="Helper pairing key",placeholder=Cfg.TTSBridgeKey~="" and "Key set · re-enter to update" or "Paste the key printed by the helper",forgetState=true,callback=function(value)
-        stopSpeech(); Cfg.TTSBridgeKey=Trim(value); Speech.connection=nil; SaveCfg()
-    end})
-    devicePicker=tab:CreateDropdown({name="Speech output device",options=Cfg.TTSDevice~="" and {Cfg.TTSDevice} or {},value=Cfg.TTSDevice~="" and Cfg.TTSDevice or nil,multiSelect=false,forgetState=true,callback=function(value)
-        if state.updating or not state.devices[value] then return end
-        Cfg.TTSDevice=state.devices[value]; changed()
-    end})
-    tab:CreateButton({name="Check helper / Refresh output devices",callback=function()
-        task.spawn(function()
-            local signature=Cfg.TTSBridgeURL.."\0"..Cfg.TTSBridgeKey
-            local connection,err=Speech.bridgeSettings()
-            if not connection then setStatus(err); SafeNotify({Title="Voice helper",Content=err}); return end
-            local health,healthError=Speech.call("/v1/status?session="..Speech.session,nil,connection)
-            if not Runtime.alive or signature~=Cfg.TTSBridgeURL.."\0"..Cfg.TTSBridgeKey then return end
-            if not health or health.service~="aichatbot-voice" then
-                local detail=healthError or "That URL is not the AI Chat Bot voice helper."
-                setStatus(detail); SafeNotify({Title="Voice helper unavailable",Content=detail}); return
-            end
-            local result,deviceError=Speech.call("/v1/devices",nil,connection)
-            if not Runtime.alive or signature~=Cfg.TTSBridgeURL.."\0"..Cfg.TTSBridgeKey then return end
-            if not result then setStatus(deviceError); return end
-            local choices={}; state.devices={}
-            for _,device in ipairs(type(result.devices)=="table" and result.devices or {}) do
-                if type(device.id)=="string" and type(device.name)=="string" then
-                    local label=device.id..(device.virtual and " · virtual mic" or " · speakers/headphones")
-                    table.insert(choices,label); state.devices[label]=device.id
-                end
-            end
-            state.updating=true; devicePicker:Refresh(choices)
-            for label,id in pairs(state.devices) do if id==Cfg.TTSDevice then devicePicker:Set(label,true) end end
-            state.updating=false
-            if health.platform=="macos" or health.platform=="windows" then
-                platform=health.platform; platformPicker:Set(platform=="macos" and "macOS (BlackHole)" or "Windows (VB-CABLE)",true)
-                guide:SetTitle(platform=="macos" and "macOS · BlackHole setup" or "Windows · VB-CABLE setup"); guide:Set(guides[platform])
-            end
-            setStatus("Helper connected · "..#choices.." output devices. Choose the virtual audio device, then set up your provider.")
-        end)
-    end})
-    status=tab:CreateText({name="Voice output status",text="Start the helper, paste its pairing key and check the connection. Voice output is off by default."})
-    tab:CreateSection({name="2 · Choose a speech provider"})
-    local function clearCatalog()
-        state.models={}; state.voices={}; state.updating=true
-        modelPicker:Refresh({}); voicePicker:Refresh({}); state.updating=false
-        setStatus("Fetch the speech catalog for this connection. Manual model/voice IDs are available below.")
-    end
-    tab:CreateDropdown({name="TTS provider",options={"OpenAI","ElevenLabs","Custom (OpenAI-compatible)"},value=providerLabels[Cfg.TTSProvider],multiSelect=false,forgetState=true,callback=function(value)
-        local selected
-        for id,label in pairs(providerLabels) do if label==value then selected=id end end
-        if not selected or selected==Cfg.TTSProvider then return end
-        stopSpeech(); Cfg.TTSProvider=selected; Cfg.TTSEnabled=false
-        if enableToggle then enableToggle:Set(false,true) end
-        Cfg.TTSModel=selected=="openai" and "gpt-4o-mini-tts" or ""; Cfg.TTSVoice=selected=="openai" and "coral" or ""
-        state.updating=true; modelInput:Set(Cfg.TTSModel,true); voiceInput:Set(Cfg.TTSVoice,true); keyInput:Set("",true); state.updating=false
-        SaveCfg(); clearCatalog()
-    end})
-    keyInput=tab:CreateInput({name="TTS provider API key",placeholder="Optional for custom/local TTS · keys stay separate from chat",forgetState=true,callback=function(value)
-        Cfg[keyFields[Cfg.TTSProvider]]=Trim(value); changed(); clearCatalog()
-    end})
-    tab:CreateInput({name="Custom TTS endpoint / base URL",value=Cfg.TTSEndpoint,placeholder="https://speech.example/v1 or full /audio/speech URL",forgetState=true,callback=function(value)
-        Cfg.TTSEndpoint=Trim(value); changed(); clearCatalog()
-    end})
-    tab:CreateInput({name="TTS model-list URL / path (optional)",value=Cfg.TTSModelsPath,placeholder="Auto /v1/models · /models · full URL",forgetState=true,callback=function(value)
-        Cfg.TTSModelsPath=Trim(value); changed(); clearCatalog()
-    end})
-    tab:CreateInput({name="TTS voice-list URL / path (optional)",value=Cfg.TTSVoicesPath,placeholder="Auto /v1/voices · /voices · full URL",forgetState=true,callback=function(value)
-        Cfg.TTSVoicesPath=Trim(value); changed(); clearCatalog()
-    end})
-    tab:CreateText({name="Speech-only models",text="The catalog lists dedicated TTS models. Chat, transcription and voice-conversion-only models are excluded. Custom servers without capability metadata can use a manual TTS ID and voice ID; Test selected voice verifies speech generation."})
-    tab:CreateSection({name="3 · Pick a TTS model and voice"})
-    local function openaiVoices()
-        if Cfg.TTSProvider~="openai" then return end
-        local values=Cfg.TTSModel=="tts-1" or Cfg.TTSModel=="tts-1-hd"
-        values=values and {"alloy","ash","coral","echo","fable","nova","onyx","sage","shimmer"} or {"alloy","ash","ballad","coral","echo","fable","nova","onyx","sage","shimmer","verse","marin","cedar"}
-        state.voices={}; state.updating=true; voicePicker:Refresh(values)
-        for _,voice in ipairs(values) do state.voices[voice]=voice end
-        if not state.voices[Cfg.TTSVoice] then Cfg.TTSVoice="coral" end
-        voicePicker:Set(Cfg.TTSVoice,true); voiceInput:Set(Cfg.TTSVoice,true); state.updating=false
-    end
-    modelPicker=tab:CreateDropdown({name="TTS models",options={},multiSelect=false,forgetState=true,callback=function(value)
-        if state.updating or not state.models[value] then return end
-        Cfg.TTSModel=state.models[value]; modelInput:Set(Cfg.TTSModel,true); openaiVoices(); changed()
-    end})
-    voicePicker=tab:CreateDropdown({name="TTS voices",options={},multiSelect=false,forgetState=true,callback=function(value)
-        if state.updating or not state.voices[value] then return end
-        Cfg.TTSVoice=state.voices[value]; voiceInput:Set(Cfg.TTSVoice,true); changed()
-    end})
-    modelInput=tab:CreateInput({name="Manual TTS model ID",value=Cfg.TTSModel,placeholder="Exact speech model ID",forgetState=true,callback=function(value)
-        Cfg.TTSModel=Trim(value); openaiVoices(); changed()
-    end})
-    voiceInput=tab:CreateInput({name="Manual TTS voice ID",value=Cfg.TTSVoice,placeholder="Voice name or provider voice ID",forgetState=true,callback=function(value)
-        Cfg.TTSVoice=Trim(value); changed()
-    end})
-    tab:CreateButton({name="Fetch / Refresh TTS models and voices",callback=function()
-        if state.loading then return end
-        state.loading=true; local signature=Speech.signature()
-        setStatus("Fetching speech-only models and voices…")
-        task.spawn(function()
-            local result,err=Speech.call("/v1/catalog",{settings=Speech.settings()})
-            state.loading=false
-            if not Runtime.alive or signature~=Speech.signature() then return end
-            if not result then setStatus(err); SafeNotify({Title="TTS catalog failed",Content=err}); return end
-            state.models={}; state.voices={}; local models,voices={},{}
-            for _,model in ipairs(type(result.models)=="table" and result.models or {}) do
-                if type(model.id)=="string" and model.id~="" then table.insert(models,model.id); state.models[model.id]=model.id end
-            end
-            for _,voice in ipairs(type(result.voices)=="table" and result.voices or {}) do
-                if type(voice.id)=="string" and voice.id~="" then
-                    local label=voice.name and voice.name~=voice.id and voice.name.." · "..voice.id or voice.id
-                    table.insert(voices,label); state.voices[label]=voice.id
-                end
-            end
-            state.updating=true; modelPicker:Refresh(models); voicePicker:Refresh(voices)
-            if state.models[Cfg.TTSModel] then modelPicker:Set(Cfg.TTSModel,true) end
-            for label,id in pairs(state.voices) do if id==Cfg.TTSVoice then voicePicker:Set(label,true) end end
-            state.updating=false; openaiVoices()
-            setStatus(#models.." TTS models · "..#voices.." voices. "..(result.note or "Select a model and voice, then test playback."))
-        end)
-    end})
-    tab:CreateDropdown({name="Custom speech audio format",options={"WAV","PCM (16-bit little-endian)"},value=Cfg.TTSFormat=="pcm" and "PCM (16-bit little-endian)" or "WAV",multiSelect=false,forgetState=true,callback=function(value)
-        Cfg.TTSFormat=value=="WAV" and "wav" or "pcm"; changed()
-    end})
-    local rates={"16000","22050","24000","44100","48000"}
-    tab:CreateDropdown({name="Custom PCM sample rate",options=rates,value=tostring(Cfg.TTSPcmRate),multiSelect=false,forgetState=true,callback=function(value)
-        if not table.find(rates,value) then return end
-        Cfg.TTSPcmRate=tonumber(value); changed()
-    end})
-    tab:CreateSlider({name="Speech volume",range={0,100},increment=5,value=math.round(Cfg.TTSVolume*100),forgetState=true,callback=function(value)
-        Cfg.TTSVolume=value/100; changed()
-    end})
-    tab:CreateSection({name="4 · Test and enable voice output"})
-    tab:CreateButton({name="Test selected voice",callback=function()
-        local ok,err=Speech.enqueue("This is an AI-generated voice. Your chatbot's speech output is ready.",{private=true},true)
-        if ok then setStatus("Voice test queued. Check that Roblox uses the matching virtual microphone, then refresh speech status.")
-        else setStatus(err); SafeNotify({Title="Voice test failed",Content=err}) end
-    end})
-    enableToggle=tab:CreateToggle({name="Speak public AI replies",value=Cfg.TTSEnabled,forgetState=true,callback=function(value)
-        if value then
-            local connection,err=Speech.bridgeSettings()
-            local keyMissing=Cfg.TTSProvider~="custom" and (Trim(Speech.providerKey())=="" or Speech.providerKey():match("^YOUR_"))
-            if not connection or keyMissing or Cfg.TTSDevice=="" or Cfg.TTSModel=="" or Cfg.TTSVoice=="" then
-                Cfg.TTSEnabled=false; enableToggle:Set(false,true); SaveCfg()
-                SafeNotify({Title="Finish voice setup",Content=err or keyMissing and "Enter the selected TTS provider’s API key." or "Select a TTS model, voice and output device first."}); return
-            end
-        else stopSpeech() end
-        Cfg.TTSEnabled=value; SaveCfg(); setStatus(value and "Voice enabled. Public AI replies will be spoken through the selected device." or "Voice disabled.")
-    end})
-    tab:CreateToggle({name="Also speak private / local-preview replies",value=Cfg.TTSPrivate,description="These replies will be audible through the selected voice-chat microphone.",forgetState=true,callback=function(value)
-        Cfg.TTSPrivate=value; changed()
-    end})
-    tab:CreateButton({name="Stop current / queued speech",callback=stopSpeech})
-    tab:CreateButton({name="Refresh speech status",callback=function()
-        task.spawn(function()
-            local data,err=Speech.call("/v1/status?session="..Speech.session)
-            if not Runtime.alive then return end
-            if not data then setStatus(err); return end
-            local stats=type(data.stats)=="table" and data.stats or {}
-            local latest=type(data.jobs)=="table" and data.jobs[#data.jobs]
-            setStatus(string.format("%s · Queue: %d · Played: %d · Errors: %d\nLatest speech: %s\nLast error: %s",data.active and "Speaking / preparing audio" or "Idle",data.queue or 0,stats.played or 0,stats.errors or 0,latest and latest.state or "None",stats.last_error~="" and stats.last_error or Speech.lastError))
-        end)
-    end})
-    tab:CreateText({name="What gets spoken",text="Public replies are spoken after chat accepts the message. Private chats and local previews stay silent unless their toggle is on. The first public speech announces that the voice is AI-generated. Speech failures never erase a text reply. Pausing the bot, changing voice settings, stopping speech or unloading cancels queued playback."})
-end
-CreateVoiceOutputTab()
+-- ─── Voice Output ───
+BuildVoiceOutputControls(Win:CreateTab({name="Voice Output"}),Cfg,{save=SaveCfg})
 
 -- ─── Avatar Vision Tab ───
 local TabVision=Win:CreateTab({name="Avatar Vision"})

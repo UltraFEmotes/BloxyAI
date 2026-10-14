@@ -1,6 +1,6 @@
 # AI Chat Bot v3 — voice output helper
 
-The script sends completed AI replies to this local helper. The helper synthesizes speech using your selected provider and plays it into a virtual audio device. Roblox captures that device as your microphone. Keep the helper running while using voice output.
+The script sends completed AI replies to this local helper. The helper synthesizes speech using your selected provider and plays it into a virtual audio device. Roblox captures that device as your microphone. Keep the helper running while using voice output. Use the optional **Voice Output** step during initial provider setup, or the **Voice Output** tab after launching the bot. You can skip speech setup and return to it later.
 
 ## macOS
 

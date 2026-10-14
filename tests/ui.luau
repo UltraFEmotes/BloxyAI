@@ -163,6 +163,7 @@ find("Name","SetupAPIKey").Text="test-key"
 assert(find("Name","SetupAPIKey").TextTransparency==1,"Key must be masked by default")
 click(find("Name","RevealAPIKey")); assert(find("Name","SetupAPIKey").TextTransparency==0)
 click(find("Name","RevealAPIKey")); assert(find("Name","SetupAPIKey").TextTransparency==1)
+click(find("Name","RememberSetupKeys"))
 click(find("Name","SetupContinue"))
 local modelSearch=find("Name","ModelSearch")
 modelSearch.Text="["; modelSearch.Text="8b"
@@ -174,6 +175,12 @@ click(find("Name","SetupContinue")); click(find("Name","SetupContinue"))
 assert(find("Name","ManualModelID").Text=="llama-3.1-8b-instant")
 click(find("Name","SetupContinue"))
 click(find("Name","Personality_Sarcastic"))
+click(find("Name","SetupContinue"))
+assert(find("Name","SetupPage_5").Visible and find("Name","SetupContinue").Text=="Start bot · text only")
+assert(find("Name","SetupVoice_Remember voice API keys on this device_Toggle").Text:find("✓",1,true))
+click(find("Name","SetupVoice_Remember voice API keys on this device_Toggle"))
+click(find("Name","SetupNav_2")); assert(find("Name","RememberSetupKeys").Text:find("○",1,true))
+click(find("Name","SetupNav_5"))
 click(find("Name","SetupContinue")); advance(2)
 assert(bot and bot.runtime.ready,"Wizard did not finish")
 assert(bot.cfg.Provider=="groq" and bot.cfg.Model=="llama-3.1-8b-instant","Filtered model selected wrong index")
@@ -217,7 +224,7 @@ click(find("Name","Model_2"))
 discoveryVersion=2
 click(find("Name","RefreshDiscoveredModels")); advance(1)
 assert(find("Text","new-model"))
-click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
+click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
 assert(bot.cfg.Provider=="custom" and bot.cfg.Model=="beta-model","Refresh should preserve the selected model")
 assert(bot.cfg.CustomModelsEndpoint=="/catalog/models" and bot.cfg.CustomKey=="custom-test-key")
 -- Fetching does not change the current model or clear history; choosing a result does.
@@ -243,7 +250,7 @@ find("Name","SetupAPIKey").Text=""
 click(find("Name","SetupContinue")); advance(1)
 assert(find("Name","ModelDiscoveryStatus").Text:find("API key",1,true))
 find("Name","ManualModelID").Text="manual-model"
-click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
+click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
 assert(bot.cfg.Provider=="custom" and bot.cfg.Model=="manual-model")
 local mainEndpoint,mainModel=bot.cfg.CustomEndpoint,bot.cfg.Model
 controls["Vision endpoint / base URL"].Callback("https://vision.example/v1")
@@ -302,7 +309,7 @@ click(find("Name","CloseSetup")); advance(3)
 assert(gui.destroyed)
 assert(not environment.AIChatBotRuntime.alive and bot==nil)
 print("PASS responsive setup: compact connection/presets, scrolling, close cancels discovery")
--- A no-key provider can complete the same four-step flow without authentication.
+-- A no-key provider can complete the same five-step flow without authentication.
 files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil; transport=nil
 services.CoreGui=Instance.new("Folder")
 task.spawn(function() bot=bootUI() end); advance(1)
@@ -310,7 +317,7 @@ click(find("Name","SelectProvider_unclose")); click(find("Name","SetupContinue")
 assert(not find("Name","SetupAPIKey").Visible)
 click(find("Name","SetupContinue"))
 find("Name","ManualModelID").Text="test-keyless-model"
-click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
+click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
 assert(bot.runtime.ready and bot.cfg.Provider=="unclose")
 -- Exercise status lifecycle with a character, not just an unattached GUI.
 local function character()
@@ -429,3 +436,139 @@ assert(recreated.destroyed and not bot.billboardState.animating)
 LP.Character=nil; transport=nil
 print("PASS status billboard: activity, identity, toggles, cancellation, errors, fixed size, respawn, recreation, unload")
 print("PASS keyless setup and native Rayfield Gen2 Unload lifecycle")
+
+-- Initial voice setup uses draft settings, the same catalog/controller as the
+-- panel, and starts without speech when the optional step is skipped.
+local function startVoiceWizard()
+    files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil; transport=nil
+    services.CoreGui=Instance.new("Folder")
+    task.spawn(function() bot=bootUI() end); advance(1)
+    click(find("Name","SelectProvider_unclose")); click(find("Name","SetupContinue"))
+    click(find("Name","SetupContinue")); find("Name","ManualModelID").Text="setup-chat-model"
+    click(find("Name","SetupContinue")); click(find("Name","SetupContinue"))
+    assert(find("Name","SetupPage_5").Visible and bot==nil)
+end
+local function voiceName(name,suffix) return "SetupVoice_"..name.."_"..suffix end
+local function voiceInput(name,value) find("Name",voiceName(name,"Input")).Text=value end
+local function voiceButton(name) click(find("Name",voiceName(name,"Button"))) end
+local function voiceToggle(name) click(find("Name",voiceName(name,"Toggle"))) end
+local function voiceChoice(name,value)
+    click(find("Name",voiceName(name,"Picker")))
+    click(find("Name",voiceName(name,"Option_"..value)))
+end
+local function voiceText(name)
+    for _,child in ipairs(find("Name","SetupVoice_"..name):GetChildren()) do
+        if child.ClassName=="TextLabel" and child.Position.Y.Offset==28 then return child.Text end
+    end
+    error("Missing voice text: "..name)
+end
+startVoiceWizard()
+voiceToggle("Speak public AI replies")
+assert(find("Name",voiceName("Speak public AI replies","Toggle")).Text:find("○",1,true))
+assert(find("Name","SetupContinue").Text=="Start bot · text only")
+assert(voiceText("Voice output status"):find("pairing key",1,true))
+voiceInput("Helper pairing key","setup-helper-key")
+assert(find("Name",voiceName("Helper pairing key","Input")).TextTransparency==1)
+click(find("Name",voiceName("Helper pairing key","Reveal")))
+assert(find("Name",voiceName("Helper pairing key","Input")).TextTransparency==0)
+click(find("Name",voiceName("Helper pairing key","Reveal")))
+local setupJobs,setupCancels={},{}
+transport=function(options)
+    assert(options.Url:find("http://127.0.0.1:8765/v1/",1,true)==1,options.Url)
+    assert(options.Headers.Authorization=="Bearer setup-helper-key")
+    if options.Method=="GET" then
+        if options.Url:find("/devices",1,true) then
+            return {StatusCode=200,Body=HttpService:JSONEncode({devices={{id="MME :: CABLE Input",name="CABLE Input",virtual=true}}})}
+        end
+        local jobs={}; for _,job in ipairs(setupJobs) do table.insert(jobs,{id=job.id,state="done"}) end
+        return {StatusCode=200,Body=HttpService:JSONEncode({service="aichatbot-voice",platform="windows",queue=0,active=false,stats={played=#jobs,errors=0,last_error=""},jobs=jobs})}
+    end
+    local body=HttpService:JSONDecode(options.Body)
+    if options.Url:find("/cancel",1,true) then table.insert(setupCancels,body); return {StatusCode=200,Body=HttpService:JSONEncode({cancelled=true})} end
+    if options.Url:find("/speak",1,true) then table.insert(setupJobs,body); return {StatusCode=202,Body=HttpService:JSONEncode({state="queued"})} end
+    assert(options.Url:find("/catalog",1,true) and body.settings.provider=="custom")
+    assert(body.settings.key=="setup-tts-key" and body.settings.models_path=="/speech/models")
+    return {StatusCode=200,Body=HttpService:JSONEncode({models={{id="kokoro"}},voices={{id="af_bella",name="Bella"}}})}
+end
+voiceButton("Check helper / Refresh output devices"); advance(1)
+assert(voiceText("macOS · BlackHole setup"):find("CABLE Output",1,true))
+voiceChoice("Speech output device","MME :: CABLE Input · virtual mic")
+voiceChoice("TTS provider","Custom (OpenAI-compatible)")
+voiceInput("Custom TTS endpoint / base URL","https://setup-speech.example/v1")
+voiceInput("TTS provider API key","setup-tts-key")
+assert(find("Name",voiceName("TTS provider API key","Input")).TextTransparency==1)
+voiceInput("TTS model-list URL / path (optional)","/speech/models")
+voiceButton("Fetch / Refresh TTS models and voices"); advance(1)
+voiceChoice("TTS models","kokoro"); voiceChoice("TTS voices","Bella · af_bella")
+voiceInput("Speech volume (0–100)","65")
+local sentBefore=#sent
+voiceButton("Test selected voice"); advance(3)
+assert(#setupJobs==1 and #sent==sentBefore)
+assert(setupJobs[1].settings.model=="kokoro" and setupJobs[1].settings.voice=="af_bella")
+assert(setupJobs[1].settings.endpoint=="https://setup-speech.example/v1" and setupJobs[1].settings.volume==0.65)
+assert(setupJobs[1].settings.key=="setup-tts-key" and not setupJobs[1].disclose)
+assert(not files["aichatbot_cfg_v3.json"] and bot==nil,"Voice setup must not commit draft settings or launch")
+voiceToggle("Speak public AI replies")
+assert(find("Name","SetupContinue").Text=="Start bot with voice")
+click(find("Name","SetupBack")); click(find("Name","Personality_Sarcastic")); click(find("Name","SetupContinue"))
+assert(find("Name",voiceName("Manual TTS model ID","Input")).Text=="kokoro","Back navigation must preserve voice settings")
+click(find("Name","SetupContinue")); advance(2)
+assert(bot.runtime.ready and bot.cfg.TTSEnabled and not bot.cfg.TTSPrivate)
+assert(bot.cfg.Provider=="unclose" and bot.cfg.Model=="setup-chat-model")
+assert(bot.cfg.TTSProvider=="custom" and bot.cfg.TTSModel=="kokoro" and bot.cfg.TTSVoice=="af_bella")
+assert(bot.cfg.TTSCustomKey=="setup-tts-key" and bot.cfg.TTSDevice=="MME :: CABLE Input")
+assert(controls["Speak public AI replies"].value and controls["Manual TTS model ID"].value=="kokoro")
+local savedVoice=HttpService:JSONDecode(files["aichatbot_cfg_v3.json"])
+assert(savedVoice.TTSEnabled and savedVoice.TTSCustomKey==nil and savedVoice.TTSBridgeKey==nil)
+assert(#setupCancels>0,"Launching must cancel pending setup voice tests")
+controls["❌ Unload Bot"].Callback()
+print("PASS initial voice setup: pairing, masks, devices, custom catalog, private voice test, draft isolation, back navigation, launch and key privacy")
+
+-- Connection changes and closing the wizard discard late catalog results and
+-- cancel the helper's audio without writing a partial setup to disk.
+startVoiceWizard()
+local voiceGui=find("Name","AIBotSetup"); voiceGui.AbsoluteSize={X=390,Y=700}
+assert(find("Name","SetupNav_5").Text=="5  Voice" and find("Name","SetupVoiceForm").Visible)
+voiceInput("Helper pairing key","setup-helper-key")
+voiceChoice("TTS provider","Custom (OpenAI-compatible)")
+voiceInput("Custom TTS endpoint / base URL","https://setup-speech.example/v1")
+voiceInput("TTS provider API key","setup-tts-key")
+voiceInput("TTS model-list URL / path (optional)","/speech/models")
+-- Reuse the paired helper fixture while this second wizard is open.
+transport=function(options)
+    local body=options.Body and HttpService:JSONDecode(options.Body)
+    if options.Url:find("/catalog",1,true) then
+        task.wait(2)
+        return {StatusCode=200,Body=HttpService:JSONEncode({models={{id="stale-tts"}},voices={{id="stale-voice"}}})}
+    end
+    if options.Url:find("/cancel",1,true) then table.insert(setupCancels,body) end
+    if options.Url:find("/speak",1,true) then task.wait(2) end
+    return {StatusCode=202,Body=HttpService:JSONEncode({state="queued"})}
+end
+voiceButton("Fetch / Refresh TTS models and voices")
+voiceInput("Custom TTS endpoint / base URL","https://new-speech.example/v1"); advance(3)
+assert(not pcall(find,"Name",voiceName("TTS models","Option_stale-tts")),"An old connection must not populate the catalog")
+voiceInput("Manual TTS model ID","manual-speech"); voiceInput("Manual TTS voice ID","manual-voice")
+voiceInput("Helper pairing key","setup-helper-key")
+-- Draft errors must redact keys even though the live configuration has none.
+transport=function() return {StatusCode=400,Body=HttpService:JSONEncode({error="Rejected setup-tts-key / setup-helper-key"})} end
+voiceButton("Fetch / Refresh TTS models and voices"); advance(1)
+assert(not voiceText("Voice output status"):find("setup-tts-key",1,true))
+assert(not voiceText("Voice output status"):find("setup-helper-key",1,true))
+local closedRequests=0
+-- Device IDs come from the helper, and closing cancels an in-flight voice test.
+transport=function(options)
+    if options.Url:find("/devices",1,true) then return {StatusCode=200,Body=HttpService:JSONEncode({devices={{id="Test :: Cable",name="Cable",virtual=true}}})} end
+    if options.Url:find("/status",1,true) then return {StatusCode=200,Body=HttpService:JSONEncode({service="aichatbot-voice"})} end
+    if options.Url:find("/cancel",1,true) then closedRequests=closedRequests+1 end
+    task.wait(2); return {StatusCode=202,Body=HttpService:JSONEncode({state="queued"})}
+end
+voiceButton("Check helper / Refresh output devices"); advance(1)
+voiceChoice("Speech output device","Test :: Cable · virtual mic")
+voiceToggle("Remember voice API keys on this device")
+assert(find("Name","RememberSetupKeys").Text:find("✓",1,true))
+voiceButton("Fetch / Refresh TTS models and voices")
+voiceButton("Test selected voice"); click(find("Name","CloseSetup")); advance(3)
+assert(voiceGui.destroyed and not environment.AIChatBotRuntime.alive and bot==nil)
+assert(closedRequests>0 and not files["aichatbot_cfg_v3.json"])
+print("PASS initial voice setup cancellation: compact layout, stale catalogs, key redaction, storage preference, manual IDs and close during a voice test")
