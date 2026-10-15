@@ -417,6 +417,23 @@ test("a level chosen for another model falls back to thinking off", function()
     assert(HttpService:JSONDecode(requests[#requests].Body).reasoning_effort=="none")
     bot.cfg.ReasoningEffort="none"; bot.cfg.ReasoningModel=""; bot.cfg.Model="test-model"; bot.cfg.MaxTokens=120
 end)
+test("thinking rejections name the model and how to use it", function()
+    bot.cfg.Provider="custom"; bot.cfg.Model="qwen3-vl:4b"
+    responses={{StatusCode=200,Body=HttpService:JSONEncode({choices={{message={content="",reasoning="<think>hmm"}}}})}}
+    local result,err
+    task.spawn(function() result,err=bot.raw({}) end); advance(1)
+    assert(not result and err:find("qwen3-vl:4b",1,true) and err:find("Reasoning level",1,true),tostring(err))
+    bot.cfg.Model="test-model"
+end)
+test("a chosen level accepts inline think blocks and strips them from chat", function()
+    bot.cfg.Provider="custom"; bot.cfg.Model="qwen3-vl:4b"; bot.cfg.ReasoningEffort="on"; bot.cfg.ReasoningModel="qwen3-vl:4b"
+    responses={{StatusCode=200,Body=HttpService:JSONEncode({choices={{message={content="<think>private plan</think>Hey there!"}}}})}}
+    bot.runtime.nextRequestAt=0
+    local before=#sent
+    bot.enqueue({name="Visitor",text="hello"}); advance(2)
+    assert(#sent==before+1 and sent[#sent]:find("Hey there!",1,true) and not sent[#sent]:find("private plan",1,true))
+    bot.cfg.ReasoningEffort="none"; bot.cfg.ReasoningModel=""; bot.cfg.Model="test-model"
+end)
 test("reported reasoning is rejected even when a final answer exists", function()
     local cases={
         {choices={{message={content="answer",reasoning_content="hidden reasoning"}}}},
@@ -429,7 +446,7 @@ test("reported reasoning is rejected even when a final answer exists", function(
         responses={{StatusCode=200,Body=HttpService:JSONEncode(data)}}
         local answer,err; local before=#requests
         task.spawn(function() answer,err=bot.generic("https://example.invalid",{},{}) end); advance(1)
-        assert(not answer and err:find("Reply discarded",1,true) and #requests==before+1)
+        assert(not answer and err:find("thinking=off",1,true) and err:find("discarded",1,true) and #requests==before+1)
     end
 end)
 test("zero reasoning and empty thinking delimiters are accepted", function()

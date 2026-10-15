@@ -63,7 +63,7 @@ When the active provider is Custom, the Provider tab also has **Fetch / Refresh 
 
 For a missing `/v1/models` route (HTTP 404/405), discovery tries the corresponding `/models` route. Authentication failures and rate limits are reported without probing another route.
 
-Set **Custom model-list URL / path (optional)** to override discovery. An absolute path such as `/api/tags` is resolved against the endpoint's origin. A full URL is used directly. The optional bearer key is included in discovery requests. Common OpenAI lists (`data`), Ollama lists (`models`), and plain arrays of model IDs are accepted. Duplicate IDs are removed and results are sorted.
+Set **Model-list path (optional)** (Provider tab) or the setup wizard's model-list path to override discovery. An absolute path such as `/api/tags` is resolved against the endpoint's origin. A full URL is used directly. The optional bearer key is included in discovery requests. Common OpenAI lists (`data`), Ollama lists (`models`), and plain arrays of model IDs are accepted. Duplicate IDs are removed and results are sorted.
 
 Connection changes clear cached choices, and late responses from an old connection are discarded. Model-list overrides affect discovery only; chat continues using the normalized chat-completions endpoint.
 

@@ -1138,7 +1138,17 @@ local function HasReasoningEvidence(data)
     end
     return false
 end
-local THINKING_REJECTED="Provider reported reasoning despite thinking=off. Reply discarded; thinking was not enabled."
+-- Some models think no matter what they are asked, so the message says how to use them anyway.
+local function ThinkingRejected(model,routed)
+    model=type(model)=="string" and Trim(model)~="" and Trim(model) or "This model"
+    if routed then
+        return model.." kept thinking with thinking=off, so its description was discarded. Choose a vision model without built-in thinking."
+    end
+    if Cfg.Provider=="custom" or Cfg.Provider=="lmstudio" then
+        return model.." kept thinking with thinking=off, so its reply was discarded. If this model always thinks, set Provider → Reasoning level to \"on\", or choose a model without built-in thinking."
+    end
+    return model.." reported reasoning with thinking=off, so its reply was discarded. Choose a model without built-in thinking."
+end
 
 local function HandleAPIError(code,body)
     local ok,data=pcall(HttpService.JSONDecode,HttpService,body or "")
@@ -1182,7 +1192,7 @@ local function GenericCall(url, headers, bodyTbl, providerOverride)
             local ok, data = pcall(HttpService.JSONDecode, HttpService, res.Body or "")
             if not ok or type(data) ~= "table" then return nil, "Provider returned invalid JSON." end
             -- With a chosen level, reasoning is expected; only message content is ever used.
-            if not effort and HasReasoningEvidence(data) then return nil,THINKING_REJECTED end
+            if not effort and HasReasoningEvidence(data) then return nil,ThinkingRejected(bodyTbl.model,providerOverride~=nil) end
             local choice = type(data.choices) == "table" and data.choices[1]
             local message = type(choice) == "table" and choice.message
             local content = type(message) == "table" and message.content
@@ -1358,7 +1368,7 @@ local API_CONFIGS = {
         if not res then return nil, "Request failed (Blackbox)" end
         if res.StatusCode == 200 then
             local ok,data=pcall(HttpService.JSONDecode,HttpService,res.Body or "")
-            if ok and HasReasoningEvidence(data) then return nil,THINKING_REJECTED end
+            if ok and HasReasoningEvidence(data) then return nil,ThinkingRejected(Cfg.Model) end
             return res.Body
         end
         return nil, "HTTP " .. tostring(res.StatusCode) .. " - " .. tostring(res.StatusMessage)
@@ -1840,7 +1850,10 @@ local function CallAI(item)
     if cancelled() then return nil, "Cancelled." end
     Runtime.stats.latency = os.clock() - started
     if not content then return nil, err or "No response." end
-    if HasReasoningEvidence({choices={{message={content=content}}}}) then return nil,THINKING_REJECTED end
+    -- Inline <think> blocks are expected with a chosen level; ParseAIText strips them before chat.
+    if not ActiveReasoningEffort(Cfg.Model) and HasReasoningEvidence({choices={{message={content=content}}}}) then
+        return nil,ThinkingRejected(Cfg.Model)
+    end
     local clean, actions = ParseAIText(content)
     if clean == "" then return nil, "Reply contained no visible text." end
     local speechText=clean
@@ -4155,20 +4168,20 @@ if Cfg.Provider == "custom" then
             customDiscovery.updating=false
         end
     end
-    TabProvider:CreateInput({name="Custom endpoint / base URL", value=Cfg.CustomEndpoint, callback=function(value)
+    TabProvider:CreateInput({name="Endpoint URL", value=Cfg.CustomEndpoint, callback=function(value)
         value = Trim(value)
         local urls,err=ResolveCustomEndpoints(value,Cfg.CustomModelsEndpoint)
         if urls then Cfg.CustomEndpoint=value; ClearCustomModelChoices(); InvalidatePending(); SaveCfg()
         else SafeNotify({Title="Invalid endpoint",Content=err}) end
     end, forgetState=true})
-    TabProvider:CreateInput({name="Custom model-list URL / path (optional)",value=Cfg.CustomModelsEndpoint,
+    TabProvider:CreateInput({name="Model-list path (optional)",value=Cfg.CustomModelsEndpoint,
         placeholder="Auto-detect, /v1/models, /models, or a full URL",callback=function(value)
             value=Trim(value)
             local urls,err=ResolveCustomEndpoints(Cfg.CustomEndpoint,value)
             if urls then Cfg.CustomModelsEndpoint=value; ClearCustomModelChoices(); SaveCfg()
             else SafeNotify({Title="Invalid model-list URL",Content=err}) end
         end, forgetState=true})
-    TabProvider:CreateInput({name="Custom endpoint key (optional)", placeholder="Leave empty for a local server", callback=function(value)
+    TabProvider:CreateInput({name="Endpoint key (optional)", placeholder="Leave empty for a local server", callback=function(value)
         Cfg.CustomKey=Trim(value); ClearCustomModelChoices(); InvalidatePending(); SaveCfg()
     end, forgetState=true})
     customModelsDropdown=TabProvider:CreateDropdown({name="Discovered custom models",options={},multiSelect=false,
