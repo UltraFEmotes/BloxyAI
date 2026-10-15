@@ -236,7 +236,8 @@ transport=function(options)
     assert(options.Method=="GET","Discovery should only GET")
     assert(options.Url=="https://proxy.example/catalog/models",options.Url)
     assert(options.Headers.Authorization=="Bearer custom-test-key")
-    local data=discoveryVersion==1 and {{id="alpha-model"},{id="beta-model"}} or {{id="new-model"},{id="beta-model"}}
+    local thinker={id="beta-model",reasoning={supported=true,efforts={"none","on"},default=true}}
+    local data=discoveryVersion==1 and {{id="alpha-model"},thinker} or {{id="new-model"},thinker}
     return {StatusCode=200,Body=HttpService:JSONEncode({data=data})}
 end
 startFreshWizard()
@@ -245,12 +246,22 @@ find("Name","SetupCustomModelsEndpoint").Text="/catalog/models"
 find("Name","SetupAPIKey").Text="custom-test-key"
 click(find("Name","SetupContinue")); advance(1)
 assert(find("Name","ModelDiscoveryStatus").Text:find("2 models",1,true))
+click(find("Name","Model_1"))
+assert(not find("Name","ModelReasoning").Visible,"Models without published levels show no reasoning picker")
 click(find("Name","Model_2"))
+assert(find("Name","ModelReasoning").Visible and find("Name","SetupReasoningLevel"),"Published levels offer a picker")
+click(find("Name","SetupReasoningLevel")); click(find("Name","SetupReasoning_on"))
 discoveryVersion=2
 click(find("Name","RefreshDiscoveredModels")); advance(1)
 assert(find("Text","new-model"))
 click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
 assert(bot.cfg.Provider=="custom" and bot.cfg.Model=="beta-model","Refresh should preserve the selected model")
+assert(bot.cfg.ReasoningEffort=="on" and bot.cfg.ReasoningModel=="beta-model","The chosen reasoning level is saved for its model")
+advance(1)
+assert(controls["Reasoning level"].value=="on" and table.find(controls["Reasoning level"].Values,"none · thinking off"))
+assert(controls["Reasoning levels"].text:find("none, on",1,true),"The panel lists the model's published levels")
+controls["Reasoning level"].Callback("none · thinking off")
+assert(bot.cfg.ReasoningEffort=="none" and bot.cfg.ReasoningModel=="")
 assert(bot.cfg.CustomModelsEndpoint=="/catalog/models" and bot.cfg.CustomKey=="custom-test-key")
 -- Fetching does not change the current model or clear history; choosing a result does.
 table.insert(bot.history,{role="user",content="keep until selection"})

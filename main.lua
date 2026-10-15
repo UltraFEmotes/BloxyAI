@@ -511,6 +511,8 @@ local Cfg = {
     LMStudioPort    = 1234,
     Language        = "Auto",
     SetupStyle      = "Auto",
+    ReasoningEffort = "none",
+    ReasoningModel  = "",
     TTSEnabled      = false,
     TTSPrivate      = false,
     TTSProvider     = "openai",
@@ -547,7 +549,7 @@ local SAVE_KEYS = {
     "UseCustomVision", "AvatarVisionTool", "CustomVisionEndpoint", "CustomVisionKey", "CustomVisionModel", "CustomVisionModelsEndpoint",
     "TTSEnabled", "TTSPrivate", "TTSProvider", "TTSEndpoint", "TTSOpenAIKey", "TTSElevenLabsKey", "TTSCustomKey", "TTSModel", "TTSVoice",
     "TTSModelsPath", "TTSVoicesPath", "TTSFormat", "TTSPcmRate", "TTSDevice", "TTSVolume", "TTSBridgeURL", "TTSBridgeKey",
-    "SetupStyle", "RememberHistory", "SaveAPIKeys", "QueueLimit", "QueueMaxAge", "GlobalCooldown", "RequestTimeout", "MemoryLimit"
+    "SetupStyle", "ReasoningEffort", "ReasoningModel", "RememberHistory", "SaveAPIKeys", "QueueLimit", "QueueMaxAge", "GlobalCooldown", "RequestTimeout", "MemoryLimit"
 }
 
 local KEY_MAP = {
@@ -595,6 +597,8 @@ local function NormalizeCfg()
     Cfg.BotName = Truncate(Trim(Cfg.BotName) ~= "" and Trim(Cfg.BotName) or "AIBot", 32)
     Cfg.ChatPrefix = Truncate(Cfg.ChatPrefix, 40)
     if Cfg.SetupStyle ~= "Windows" and Cfg.SetupStyle ~= "macOS" then Cfg.SetupStyle = "Auto" end
+    Cfg.ReasoningEffort = Trim(Cfg.ReasoningEffort) ~= "" and Trim(Cfg.ReasoningEffort) or "none"
+    Cfg.ReasoningModel = Trim(Cfg.ReasoningModel)
     if Cfg.TTSProvider~="openai" and Cfg.TTSProvider~="elevenlabs" and Cfg.TTSProvider~="custom" then Cfg.TTSProvider="openai" end
     if Cfg.TTSFormat~="wav" and Cfg.TTSFormat~="pcm" then Cfg.TTSFormat="wav" end
     if not table.find({16000,22050,24000,44100,48000},Cfg.TTSPcmRate) then Cfg.TTSPcmRate=24000 end
@@ -758,6 +762,20 @@ local function ResolveCustomEndpoints(endpoint, modelsEndpoint)
     return urls
 end
 
+-- Reasoning levels a server publishes for a model (e.g. reasoning.efforts = {"none","on"}).
+local function ModelEfforts(entry)
+    if type(entry)~="table" then return nil end
+    local meta=type(entry.reasoning)=="table" and entry.reasoning or {}
+    local list=meta.efforts or entry.reasoning_efforts or entry.supported_reasoning_efforts
+    if type(list)~="table" then return nil end
+    local efforts={}
+    for _,value in ipairs(list) do
+        value=type(value)=="string" and Trim(value) or ""
+        if value~="" and not table.find(efforts,value) then table.insert(efforts,value) end
+    end
+    return #efforts>0 and efforts or nil
+end
+
 local function ParseModelList(data)
     if type(data)~="table" then return nil,"Model-list response is not an object or array." end
     local entries=data.data or data.models or data
@@ -771,7 +789,7 @@ local function ParseModelList(data)
             if id~="" and not seen[id] and utf8.len(id) then
                 seen[id]=true
                 local label=type(entry)=="table" and (entry.display_name or entry.displayName) or nil
-                table.insert(models,{id=id,label=type(label)=="string" and Trim(label)~="" and label or id})
+                table.insert(models,{id=id,label=type(label)=="string" and Trim(label)~="" and label or id,efforts=ModelEfforts(entry)})
             end
         end
     end
@@ -1032,6 +1050,8 @@ end
 -- ═══════════════════════════════════════
 
 local MAX_RETRIES  = 3
+-- Extra tokens for thinking, so a chosen reasoning level cannot use up the whole reply.
+local REASONING_HEADROOM = 1024
 local RETRY_DELAY  = 2
 local ERROR_HINTS  = {
     [400]="Bad request.", [401]="Invalid API key.", [402]="Account/credits issue.",
@@ -1041,7 +1061,16 @@ local ERROR_HINTS  = {
 
 -- Every generation request asks for thinking OFF, regardless of model name.
 -- No model allowlist, saved setting, or caller override can enable it.
-local function ApplyNoThinking(body, url, providerOverride)
+-- A user-chosen level applies to chat requests on custom/LM Studio endpoints, for the model it was chosen for.
+local function ActiveReasoningEffort(model)
+    local effort=Trim(Cfg.ReasoningEffort or "")
+    if effort=="" or effort:lower()=="none" then return nil end
+    if Cfg.Provider~="custom" and Cfg.Provider~="lmstudio" then return nil end
+    if Cfg.ReasoningModel=="" or Cfg.ReasoningModel~=model then return nil end
+    return effort
+end
+
+local function ApplyNoThinking(body, url, providerOverride, effort)
     local host=(url or ""):match("^https?://([^/:]+)") or ""
     local provider=providerOverride or Cfg.Provider
     if host=="openrouter.ai" then provider="openrouter"
@@ -1057,7 +1086,14 @@ local function ApplyNoThinking(body, url, providerOverride)
     elseif provider=="together" then
         body.reasoning_effort=nil
         body.reasoning={enabled=false}
+    elseif provider=="custom" or provider=="lmstudio" then
+        -- Some OpenAI-compatible gateways (including Ollama-based ones) ignore top-level
+        -- reasoning_effort but honor the reasoning object, so send both forms of the level.
+        body.reasoning_effort=effort or "none"
+        body.reasoning={effort=effort or "none"}
+        return true
     end
+    return false
 end
 
 local function HasReasoningEvidence(data)
@@ -1127,7 +1163,13 @@ end
 
 local function GenericCall(url, headers, bodyTbl, providerOverride)
     bodyTbl=table.clone(bodyTbl)
-    ApplyNoThinking(bodyTbl,url,providerOverride)
+    -- Vision and other routed requests (providerOverride) always stay off.
+    local effort=providerOverride==nil and ActiveReasoningEffort(bodyTbl.model) or nil
+    local reasoningObject=ApplyNoThinking(bodyTbl,url,providerOverride,effort)
+    if effort then
+        if bodyTbl.max_tokens then bodyTbl.max_tokens=bodyTbl.max_tokens+REASONING_HEADROOM end
+        if bodyTbl.max_completion_tokens then bodyTbl.max_completion_tokens=bodyTbl.max_completion_tokens+REASONING_HEADROOM end
+    end
     local encoded, body = pcall(HttpService.JSONEncode, HttpService, bodyTbl)
     if not encoded then return nil, "Could not encode request." end
     local generation = Runtime.generation
@@ -1139,7 +1181,8 @@ local function GenericCall(url, headers, bodyTbl, providerOverride)
         if res and res.StatusCode >= 200 and res.StatusCode < 300 then
             local ok, data = pcall(HttpService.JSONDecode, HttpService, res.Body or "")
             if not ok or type(data) ~= "table" then return nil, "Provider returned invalid JSON." end
-            if HasReasoningEvidence(data) then return nil,THINKING_REJECTED end
+            -- With a chosen level, reasoning is expected; only message content is ever used.
+            if not effort and HasReasoningEvidence(data) then return nil,THINKING_REJECTED end
             local choice = type(data.choices) == "table" and data.choices[1]
             local message = type(choice) == "table" and choice.message
             local content = type(message) == "table" and message.content
@@ -1171,6 +1214,19 @@ local function GenericCall(url, headers, bodyTbl, providerOverride)
             return content
         end
         lastError = res and HandleAPIError(res.StatusCode,res.Body) or networkError or "No response"
+        if effort then
+            lastError = lastError:gsub("Provider rejected thinking=off for this model%. Thinking was not enabled%.",
+                "Provider rejected reasoning level \""..effort:gsub("%%","%%%%").."\" for this model.")
+        end
+        -- A server that rejects the extra reasoning object (not reasoning_effort itself) is retried
+        -- once with reasoning_effort="none" alone, so thinking stays off.
+        local rejection = res and (res.StatusCode == 400 or res.StatusCode == 422) and lastError:lower()
+        if reasoningObject and rejection and rejection:find("reasoning",1,true) and not rejection:find("reasoning_effort",1,true) then
+            reasoningObject = false; bodyTbl.reasoning = nil
+            encoded, body = pcall(HttpService.JSONEncode, HttpService, bodyTbl)
+            if not encoded then return nil, "Could not encode request." end
+            continue
+        end
         if res and res.StatusCode == 429 then
             local responseHeaders = res.Headers or res.headers or {}
             local retryAfter = tonumber(responseHeaders["Retry-After"] or responseHeaders["retry-after"]) or 15
@@ -3526,7 +3582,7 @@ local function RunSetupWizard()
             or provider.noKey and "No account key is needed. Service availability depends on the provider."
             or "Get a key from "..provider.signup..". Your key goes only to this provider."
         S.info(connectionScroll,{name="ConnectionGuide",severity="info",title="How to connect",order=2,
-            message=guide.." Thinking is requested off for every model."})
+            message=guide.." Thinking is off by default; some custom and local models let you pick a reasoning level on the next step."})
     end
     local function validateConnection()
         if provider.id=="custom" then
@@ -3551,8 +3607,17 @@ local function RunSetupWizard()
     local refresh=S.button(statusRow,{name="RefreshDiscoveredModels",text="Refresh models",size=UDim2.fromOffset(150,28),
         anchor=Vector2.new(1,0.5),position=UDim2.new(1,-14,0.5,0)})
     local listGroup=S.group(modelScroll,{name="ModelList",title="Models",order=2})
-    local manualGroup=S.group(modelScroll,{name="ModelManual",title="Exact model ID",order=3,
-        footnote="Use any exact ID your provider accepts. Thinking is requested off for every model."})
+    -- Shown only when the server publishes reasoning levels for the selected model.
+    local reasoningGroup=S.group(modelScroll,{name="ModelReasoning",title="Reasoning",order=3,
+        footnote="Published by your server for this model. Off is fastest; thinking makes replies slower and uses extra tokens. Reasoning is never posted to chat."})
+    local reasoningRow=reasoningGroup.row({name="ReasoningRow",title="Reasoning level"})
+    local function effortLabel(effort) return effort=="none" and "none · thinking off" or effort end
+    local reasoningPicker=S.popup(reasoningRow,{name="SetupReasoningLevel",options={"none"},value="none",widthScale=0.5,
+        lift={reasoningRow,reasoningGroup.frame},display=effortLabel,optionName=function(effort) return "SetupReasoning_"..effort end,
+        onChange=function(effort) draft.ReasoningEffort=effort; draft.ReasoningModel=modelId end})
+    reasoningGroup.frame.Visible=false
+    local manualGroup=S.group(modelScroll,{name="ModelManual",title="Exact model ID",order=4,
+        footnote="Use any exact ID your provider accepts. Thinking is off unless you choose a reasoning level."})
     local manualRow=manualGroup.row({name="ManualModelRow",title="Selected model / manual ID"})
     local manual=S.field(manualRow,{name="ManualModelID",value=modelId,mono=true,placeholder="Exact model ID",widthScale=0.6,
         onFocusLost=function(enter) if enter then goNext() end end})
@@ -3566,6 +3631,18 @@ local function RunSetupWizard()
             row.mark(modelId==row.entry.id)
         end
         listGroup.setFootnote(count==0 and "No matching models. Enter an exact model ID below." or "")
+        -- Offer the selected model's published reasoning levels; anything else stays off.
+        local efforts
+        for _,row in ipairs(modelRows) do if row.entry.id==modelId then efforts=row.entry.efforts end end
+        reasoningGroup.frame.Visible=efforts~=nil
+        if draft.ReasoningModel~=modelId or not efforts or not table.find(efforts,draft.ReasoningEffort) then
+            draft.ReasoningEffort="none"; draft.ReasoningModel=modelId
+        end
+        if efforts then
+            local options={"none"}
+            for _,effort in ipairs(efforts) do if effort~="none" then table.insert(options,effort) end end
+            reasoningPicker.Refresh(options); reasoningPicker.Set(draft.ReasoningEffort)
+        end
     end
     renderModels=function(entries)
         listGroup.clear()
@@ -3740,6 +3817,8 @@ local function RunSetupWizard()
         if provider.id=="unclose" then Cfg.UncloseEndpoint=modelId end
         Cfg.CustomEndpoint=draft.CustomEndpoint; Cfg.CustomModelsEndpoint=draft.CustomModelsEndpoint
         Cfg.LMStudioPort=draft.LMStudioPort; Cfg.SaveAPIKeys=draft.SaveAPIKeys
+        local effort=(provider.id=="custom" or provider.id=="lmstudio") and draft.ReasoningModel==modelId and draft.ReasoningEffort or "none"
+        Cfg.ReasoningEffort=effort or "none"; Cfg.ReasoningModel=Cfg.ReasoningEffort~="none" and modelId or ""
         for _,field in pairs(KEY_MAP) do Cfg[field]=draft[field] end
         for _,field in ipairs(SAVE_KEYS) do if field:match("^TTS") then Cfg[field]=draft[field] end end
         Cfg.SystemPrompt=prompt.Text; Cfg.BotName=Trim(botName.Text)~="" and Trim(botName.Text) or "AIBot"
@@ -3951,7 +4030,7 @@ TabPersonality:CreateDropdown({
 TabPersonality:CreateToggle({ name="Brief pause before replying", value=Cfg.ThinkDelay, callback=function(v) Cfg.ThinkDelay=v; SaveCfg() end, forgetState=true})
 TabPersonality:CreateSlider({ name="Creativity (1 precise – 20 wild)", increment=1, range={1,20}, value=math.round(Cfg.Temperature*10), callback=function(v) Cfg.Temperature=v/10; SaveCfg() end, forgetState=true})
 TabPersonality:CreateSlider({ name="Max reply tokens", increment=10, range={40,500}, value=Cfg.MaxTokens, callback=function(v) Cfg.MaxTokens=v; SaveCfg() end, forgetState=true})
-TabPersonality:CreateText({name="Model thinking: off", text="Every request forces thinking off, including custom models. Provider errors and reported reasoning are rejected. The reply pause changes timing only."})
+TabPersonality:CreateText({name="Model thinking", text="Thinking is off by default, and replies that report reasoning are discarded. Custom and LM Studio models that publish reasoning levels can use one: choose it under Provider → Reasoning level. The reply pause changes timing only."})
 
 -- ─── Replies: who the bot answers, greetings, player lists ───
 local TabReplies = Win:CreateTab({ name = "Replies" })
@@ -4001,9 +4080,12 @@ TabReplies:CreateButton({ name="Clear blacklist", callback=function() Cfg.Blackl
 local TabProvider = Win:CreateTab({ name = "Provider" })
 TabProvider:CreateSection({ name = "Connection" })
 local connectionText = TabProvider:CreateText({ name="Active connection", text="Provider: "..ProviderName(Cfg.Provider).."\nModel: "..Cfg.Model })
+-- Set by the Reasoning section when the provider can publish reasoning levels.
+local RefreshReasoning, LearnReasoningLevels = function() end, function() end
 TabProvider:CreateInput({name="Model ID", value=Cfg.Model, placeholder="Exact model ID from your provider", callback=function(value)
     if SetModel(value) then
         connectionText:Set("Provider: "..ProviderName(Cfg.Provider).."\nModel: "..Cfg.Model)
+        RefreshReasoning()
         SafeNotify({Title="Model updated", Content=Cfg.Model})
     end
 end, forgetState=true})
@@ -4012,6 +4094,53 @@ TabProvider:CreateButton({name="Test Connection (private)", callback=function()
         SafeNotify({Title=result and "Connection working" or "Connection failed", Content=result or err, Duration=8})
     end})
 end})
+
+-- Reasoning levels come from the server's model list (e.g. reasoning.efforts), so only custom and
+-- LM Studio endpoints offer them. Off stays the default; a level applies to the model it was chosen for.
+if Cfg.Provider == "custom" or Cfg.Provider == "lmstudio" then
+    TabProvider:CreateSection({ name = "Reasoning" })
+    local knownEfforts, loaded = {}, false
+    local function EffortLabel(effort) return effort == "none" and "none · thinking off" or effort end
+    local reasoningDropdown, reasoningText
+    RefreshReasoning = function()
+        local efforts = knownEfforts[Cfg.Model]
+        local options = {EffortLabel("none")}
+        for _, effort in ipairs(efforts or {}) do
+            if effort ~= "none" then table.insert(options, EffortLabel(effort)) end
+        end
+        -- Forget a saved level the model no longer publishes.
+        if efforts and Cfg.ReasoningEffort ~= "none" and Cfg.ReasoningModel == Cfg.Model and not table.find(efforts, Cfg.ReasoningEffort) then
+            Cfg.ReasoningEffort = "none"; Cfg.ReasoningModel = ""; SaveCfg()
+        end
+        local current = Cfg.ReasoningModel == Cfg.Model and Cfg.ReasoningEffort or "none"
+        reasoningDropdown:Refresh(options); reasoningDropdown:Set(EffortLabel(current), true)
+        reasoningText:Set(not loaded and "Loading reasoning levels from your server..."
+            or efforts and ("Levels published for "..Cfg.Model..": "..table.concat(efforts, ", ")..". Off is fastest; thinking makes replies slower and uses extra tokens. Reasoning is never posted to chat.")
+            or ("Your server doesn't publish reasoning levels for "..Cfg.Model..", so thinking stays off."))
+    end
+    LearnReasoningLevels = function(models)
+        loaded = true
+        for _, model in ipairs(models) do knownEfforts[model.id] = model.efforts end
+        RefreshReasoning()
+    end
+    reasoningDropdown = TabProvider:CreateDropdown({name="Reasoning level", options={EffortLabel("none")}, value=EffortLabel("none"),
+        multiSelect=false, callback=function(label)
+            local chosen = "none"
+            for _, effort in ipairs(knownEfforts[Cfg.Model] or {}) do if EffortLabel(effort) == label then chosen = effort end end
+            if chosen == (Cfg.ReasoningModel == Cfg.Model and Cfg.ReasoningEffort or "none") then return end
+            Cfg.ReasoningEffort = chosen; Cfg.ReasoningModel = chosen ~= "none" and Cfg.Model or ""
+            InvalidatePending(); SaveCfg()
+            SafeNotify({Title="Reasoning level", Content=chosen == "none" and "Thinking off." or (chosen.." for "..Cfg.Model..". Replies may be slower.")})
+        end, forgetState=true})
+    reasoningText = TabProvider:CreateText({name="Reasoning levels", text="Loading reasoning levels from your server..."})
+    task.spawn(function()
+        local endpoint = Cfg.Provider == "lmstudio" and "http://localhost:"..tostring(Cfg.LMStudioPort).."/v1" or Cfg.CustomEndpoint
+        local models, err = DiscoverModels(endpoint, Cfg.Provider == "custom" and Cfg.CustomKey or "", Cfg.Provider == "custom" and Cfg.CustomModelsEndpoint or "")
+        if not Runtime.alive then return end
+        if models then LearnReasoningLevels(models)
+        else loaded = true; RefreshReasoning(); reasoningText:Set((err or "Model list unavailable.").." Thinking stays off.") end
+    end)
+end
 
 if Cfg.Provider == "custom" then
     TabProvider:CreateSection({ name = "Custom endpoint" })
@@ -4045,7 +4174,7 @@ if Cfg.Provider == "custom" then
     customModelsDropdown=TabProvider:CreateDropdown({name="Discovered custom models",options={},multiSelect=false,
         description="Fetch models after configuring your endpoint.",callback=function(value)
             if customDiscovery.updating or not customDiscovery.ids[value] then return end
-            SetModel(value)
+            SetModel(value); RefreshReasoning()
             connectionText:Set("Provider: "..ProviderName(Cfg.Provider).."\nModel: "..Cfg.Model)
             SafeNotify({Title="Model selected",Content=Cfg.Model})
         end, forgetState=true})
@@ -4071,6 +4200,7 @@ if Cfg.Provider == "custom" then
             customModelsDropdown:Refresh(values)
             if customDiscovery.ids[Cfg.Model] then customModelsDropdown:Set(Cfg.Model,true) end
             customModelStatus:Set(#models.." models found. Select one to use it.")
+            LearnReasoningLevels(models)
             customDiscovery.updating=false
             SafeNotify({Title="Models loaded",Content=#models.." models available from your custom endpoint."})
         end)

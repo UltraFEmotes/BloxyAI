@@ -357,6 +357,66 @@ test("providers rejecting off return an error without a thinking-enabled retry",
     assert(not result and err:find("thinking=off",1,true) and #requests==before+1)
     assert(HttpService:JSONDecode(requests[#requests].Body).reasoning_effort=="none")
 end)
+test("custom and local endpoints send both forms of thinking off", function()
+    -- Some Ollama-based gateways ignore top-level reasoning_effort and only honor the reasoning object.
+    for _,provider in ipairs({"custom","lmstudio"}) do
+        bot.cfg.Provider=provider; bot.cfg.Model="gemma4:e2b"
+        task.spawn(function() bot.raw({}) end); advance(1)
+        local body=HttpService:JSONDecode(requests[#requests].Body)
+        assert(body.reasoning_effort=="none" and type(body.reasoning)=="table" and body.reasoning.effort=="none",provider)
+    end
+    bot.cfg.Provider="groq"; bot.cfg.GroqKey="test"; bot.cfg.Model="llama-3.1-8b-instant"
+    task.spawn(function() bot.raw({}) end); advance(1)
+    assert(HttpService:JSONDecode(requests[#requests].Body).reasoning==nil,"Strict cloud APIs keep the single form")
+    bot.cfg.Provider="custom"; bot.cfg.Model="test-model"
+end)
+test("servers rejecting the reasoning object retry once with reasoning_effort none only", function()
+    responses={
+        {StatusCode=400,Body=HttpService:JSONEncode({error={message="Unrecognized request argument supplied: reasoning"}})},
+        {StatusCode=200,Body=HttpService:JSONEncode({choices={{message={content="Hello!"}}}})},
+    }
+    local result,err; local before=#requests
+    task.spawn(function() result,err=bot.raw({}) end); advance(10)
+    assert(result=="Hello!" and #requests==before+2,tostring(err))
+    local retry=HttpService:JSONDecode(requests[#requests].Body)
+    assert(retry.reasoning==nil and retry.reasoning_effort=="none","The retry still requests thinking off")
+end)
+test("model lists keep each model's published reasoning levels", function()
+    local models=bot.parseModels({data={
+        {id="plain-model"},
+        {id="gemma4:e2b",reasoning={supported=true,efforts={"none","on"," on ",""},default=true}},
+        {id="other-thinker",supported_reasoning_efforts={"low","high"}},
+    }})
+    assert(models[1].id=="gemma4:e2b" and #models[1].efforts==2 and models[1].efforts[2]=="on")
+    assert(models[2].id=="other-thinker" and models[2].efforts[1]=="low")
+    assert(models[3].id=="plain-model" and models[3].efforts==nil)
+end)
+test("a chosen reasoning level is sent with headroom and its reasoning stays private", function()
+    bot.cfg.Provider="custom"; bot.cfg.Model="gemma4:e2b"; bot.cfg.MaxTokens=120
+    bot.cfg.ReasoningEffort="on"; bot.cfg.ReasoningModel="gemma4:e2b"
+    responses={{StatusCode=200,Body=HttpService:JSONEncode({choices={{message={content="Hi there!",reasoning="private thoughts"}}},
+        usage={completion_tokens_details={reasoning_tokens=40}}})}}
+    local result,err
+    task.spawn(function() result,err=bot.raw({}) end); advance(1)
+    assert(result=="Hi there!",tostring(err))
+    local body=HttpService:JSONDecode(requests[#requests].Body)
+    assert(body.reasoning_effort=="on" and body.reasoning.effort=="on")
+    assert(body.max_tokens>120,"Thinking gets extra tokens so it cannot consume the whole reply")
+    -- Vision descriptions stay off even with a chat reasoning level.
+    responses={{StatusCode=200,Body=HttpService:JSONEncode({choices={{message={content="A hat."}}}})}}
+    task.spawn(function() bot.generic("https://vision.example/v1/chat/completions",{},{model="gemma4:e2b",messages={}},"custom") end); advance(1)
+    assert(HttpService:JSONDecode(requests[#requests].Body).reasoning_effort=="none")
+end)
+test("a level chosen for another model falls back to thinking off", function()
+    bot.cfg.Provider="custom"; bot.cfg.Model="different-model"
+    bot.cfg.ReasoningEffort="on"; bot.cfg.ReasoningModel="gemma4:e2b"
+    responses={{StatusCode=200,Body=HttpService:JSONEncode({choices={{message={content="answer",reasoning="leaked"}}}})}}
+    local result,err
+    task.spawn(function() result,err=bot.raw({}) end); advance(1)
+    assert(not result and err:find("thinking=off",1,true),"Off-mode still rejects reported reasoning")
+    assert(HttpService:JSONDecode(requests[#requests].Body).reasoning_effort=="none")
+    bot.cfg.ReasoningEffort="none"; bot.cfg.ReasoningModel=""; bot.cfg.Model="test-model"; bot.cfg.MaxTokens=120
+end)
 test("reported reasoning is rejected even when a final answer exists", function()
     local cases={
         {choices={{message={content="answer",reasoning_content="hidden reasoning"}}}},
@@ -488,7 +548,9 @@ test("vision API dialect is independent of the chat provider",function()
     configureVision(); bot.cfg.Provider="openrouter"
     transport=function(options)
         local body=HttpService:JSONDecode(options.Body)
-        assert(body.model=="image-reader" and body.reasoning_effort=="none" and body.reasoning==nil)
+        -- The custom dialect sends both off forms, never OpenRouter's enabled/exclude object.
+        assert(body.model=="image-reader" and body.reasoning_effort=="none" and body.reasoning.effort=="none")
+        assert(body.reasoning.enabled==nil and body.reasoning.exclude==nil)
         return textResponse("A green hood.")
     end
     local caption
