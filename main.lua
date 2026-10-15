@@ -1953,7 +1953,7 @@ end)
 -- One restrained palette for setup and the Rayfield panel.
 local C = {
     BG=Color3.fromRGB(19,22,24), CARD=Color3.fromRGB(27,31,33),
-    SELECTED=Color3.fromRGB(32,48,43), BORDER=Color3.fromRGB(57,64,65),
+    SELECTED=Color3.fromRGB(32,48,43), BORDER=Color3.fromRGB(57,64,65), HOVER=Color3.fromRGB(35,40,42),
     TEXT=Color3.fromRGB(237,240,237), MUTED=Color3.fromRGB(166,176,172),
     ACCENT=Color3.fromRGB(146,222,184), INK=Color3.fromRGB(16,36,26),
     RED=Color3.fromRGB(255,151,142),
@@ -2281,81 +2281,222 @@ local function RunSetupWizard()
         if step==5 then nextButton.Text=draft.TTSEnabled and "Start bot with voice" or "Start bot · text only" end
     end
 
-    -- Provider: searchable, stable tiles, readable capabilities and selected state.
-    local providerSearch=input(pages[1],"ProviderSearch","","Search providers or model IDs",UDim2.new(1,-92,0,42),UDim2.new())
-    local clearSearch=button(pages[1],"ClearProviderSearch","Clear",UDim2.fromOffset(80,42),UDim2.new(1,-80,0,0))
-    local filter,providerRows="All",{}
+    -- Provider: search, filter chips with live counts, and branded tiles with a clear selected state.
+    local quick=TweenInfo.new(0.14,Enum.EasingStyle.Quart,Enum.EasingDirection.Out)
+    local function tween(node,goal) TweenService:Create(node,quick,goal):Play() end
+    local TILE_HEIGHT,TILE_GAP=92,10
+    local VISION=Color3.fromRGB(150,186,255)
+    local filter,providerRows,columns,showCounts="All",{},3,true
     local filters={"All","Cloud","No key","Vision","Local"}
     local filterButtons={}
-    for i,name in ipairs(filters) do
-        local b,o=button(pages[1],"ProviderFilter_"..name,name,UDim2.fromOffset(80,32),UDim2.fromOffset((i-1)*88,54))
-        filterButtons[name]={button=b,stroke=o}
+    local searchField=frame(pages[1],"ProviderSearchField",UDim2.new(1,0,0,40),UDim2.new(),C.CARD); corner(searchField)
+    local searchStroke=stroke(searchField)
+    -- Magnifier drawn from primitives so it does not depend on font glyph coverage.
+    local lens=frame(searchField,"SearchIcon",UDim2.fromOffset(10,10),UDim2.new(0,20,0.5,-2)); lens.AnchorPoint=Vector2.new(0.5,0.5)
+    lens.BackgroundTransparency=1; corner(lens,5); stroke(lens,C.MUTED).Thickness=2
+    local lensHandle=frame(searchField,"SearchIconHandle",UDim2.fromOffset(6,2),UDim2.new(0,27,0.5,5),C.MUTED)
+    lensHandle.AnchorPoint=Vector2.new(0.5,0.5); lensHandle.Rotation=45; corner(lensHandle,1)
+    local providerSearch=Instance.new("TextBox"); providerSearch.Name="ProviderSearch"; providerSearch.Text=""
+    providerSearch.PlaceholderText="Search providers or model IDs"; providerSearch.Size=UDim2.new(1,-112,1,0)
+    providerSearch.Position=UDim2.fromOffset(40,0); providerSearch.BackgroundTransparency=1; providerSearch.ClearTextOnFocus=false
+    providerSearch.TextColor3=C.TEXT; providerSearch.PlaceholderColor3=C.MUTED; providerSearch.TextSize=14; providerSearch.Font=Enum.Font.Gotham
+    providerSearch.TextXAlignment=Enum.TextXAlignment.Left; providerSearch.Parent=searchField
+    local clearSearch=button(searchField,"ClearProviderSearch","Clear",UDim2.fromOffset(60,28),UDim2.new(1,-6,0.5,0))
+    clearSearch.AnchorPoint=Vector2.new(1,0.5); clearSearch.BackgroundColor3=C.BG; clearSearch.TextSize=12; clearSearch.Visible=false
+    local filterBar=frame(pages[1],"ProviderFilters",UDim2.new(1,0,0,34),UDim2.fromOffset(0,48)); filterBar.BackgroundTransparency=1
+    local chipLayout=Instance.new("UIListLayout"); chipLayout.FillDirection=Enum.FillDirection.Horizontal; chipLayout.Padding=UDim.new(0,6)
+    chipLayout.SortOrder=Enum.SortOrder.LayoutOrder; chipLayout.VerticalAlignment=Enum.VerticalAlignment.Center; chipLayout.Parent=filterBar
+    local function paintChip(row)
+        local active=row.name==filter
+        tween(row.button,{BackgroundColor3=active and C.ACCENT or row.hover and C.HOVER or C.CARD,
+            TextColor3=active and C.INK or row.hover and C.TEXT or C.MUTED,TextTransparency=not active and row.count==0 and 0.45 or 0})
+        tween(row.stroke,{Color=(active or row.hover) and C.ACCENT or C.BORDER,Transparency=row.hover and not active and 0.4 or 0})
+        row.button.Text=row.name..(showCounts and row.count and "  <font transparency=\"0.45\">"..row.count.."</font>" or "")
     end
-    local selectedName=label(pages[1],"",UDim2.new(0.55,0,0,24),UDim2.fromOffset(0,96),12,C.ACCENT,true)
-    selectedName.Name="SelectedProviderName"
-    selectedName.TextWrapped=false; selectedName.TextTruncate=Enum.TextTruncate.AtEnd
-    local selectedAuth=label(pages[1],"",UDim2.new(0.45,0,0,24),UDim2.new(0.55,0,0,96),12,C.MUTED)
-    selectedAuth.TextWrapped=false; selectedAuth.TextTruncate=Enum.TextTruncate.AtEnd
-    selectedAuth.Name="SelectedProviderAuth"; selectedAuth.TextXAlignment=Enum.TextXAlignment.Right
-    local providerList=scroll(pages[1],"ProviderList",UDim2.new(1,0,1,-132),UDim2.fromOffset(0,132))
-    local grid=Instance.new("UIGridLayout"); grid.CellPadding=UDim2.fromOffset(12,12)
-    grid.SortOrder=Enum.SortOrder.LayoutOrder; grid.Parent=providerList
-    local empty=frame(pages[1],"ProviderEmptyState",UDim2.new(1,0,1,-132),UDim2.fromOffset(0,132)); empty.Visible=false
-    label(empty,"No matching providers",UDim2.new(1,-40,0,30),UDim2.fromOffset(20,28),20,C.TEXT,true)
-    label(empty,"Try a provider name, a model ID, or another filter.",UDim2.new(1,-40,0,36),UDim2.fromOffset(20,64),14,C.MUTED)
-    local reset=button(empty,"ResetProviderFilters","Reset search & filters",UDim2.fromOffset(210,40),UDim2.fromOffset(20,112))
+    for i,name in ipairs(filters) do
+        local chip=Instance.new("TextButton"); chip.Name="ProviderFilter_"..name; chip.Text=name; chip.LayoutOrder=i
+        chip.Size=UDim2.new(0.2,-5,0,34); chip.BackgroundColor3=C.CARD; chip.TextColor3=C.MUTED; chip.BorderSizePixel=0
+        chip.Font=Enum.Font.GothamBold; chip.TextSize=13; chip.RichText=true; chip.AutoButtonColor=false; chip.Parent=filterBar
+        corner(chip,17)
+        local row={button=chip,stroke=stroke(chip),name=name,hover=false}
+        connect(chip.MouseEnter,function() row.hover=true; paintChip(row) end)
+        connect(chip.MouseLeave,function() row.hover=false; paintChip(row) end)
+        connect(chip.SelectionGained,function() row.stroke.Thickness=2 end)
+        connect(chip.SelectionLost,function() row.stroke.Thickness=1 end)
+        filterButtons[name]=row
+    end
+    -- Selection stays visible above the grid even when filters hide its tile.
+    local meta=frame(pages[1],"ProviderMeta",UDim2.new(1,0,0,20),UDim2.fromOffset(0,94)); meta.BackgroundTransparency=1
+    local selectedRow=frame(meta,"SelectedProvider",UDim2.fromScale(1,1)); selectedRow.BackgroundTransparency=1
+    local selectedLayout=Instance.new("UIListLayout"); selectedLayout.FillDirection=Enum.FillDirection.Horizontal
+    selectedLayout.VerticalAlignment=Enum.VerticalAlignment.Center; selectedLayout.Padding=UDim.new(0,7)
+    selectedLayout.SortOrder=Enum.SortOrder.LayoutOrder; selectedLayout.Parent=selectedRow
+    local selectedDot=frame(selectedRow,"SelectedDot",UDim2.fromOffset(6,6),nil,C.ACCENT); selectedDot.LayoutOrder=1; corner(selectedDot,3)
+    local function inline(text,color,bold,order)
+        local obj=label(selectedRow,text,UDim2.fromScale(0,1),nil,12,color,bold)
+        obj.AutomaticSize=Enum.AutomaticSize.X; obj.TextWrapped=false; obj.LayoutOrder=order; return obj
+    end
+    inline("Selected",C.MUTED,false,2)
+    local selectedName=inline("",C.ACCENT,true,3); selectedName.Name="SelectedProviderName"
+    inline("·",C.MUTED,false,4)
+    local selectedAuth=inline("",C.MUTED,false,5); selectedAuth.Name="SelectedProviderAuth"
+    local resultCount=label(meta,"",UDim2.new(0,160,1,0),UDim2.new(1,-160,0,0),12,C.MUTED); resultCount.Name="ProviderResultCount"
+    resultCount.TextXAlignment=Enum.TextXAlignment.Right; resultCount.TextWrapped=false
+    local providerList=scroll(pages[1],"ProviderList",UDim2.new(1,0,1,-124),UDim2.fromOffset(0,124))
+    -- Inset keeps the 2px selected outline from clipping against the scroll frame.
+    local listPad=Instance.new("UIPadding"); listPad.PaddingTop=UDim.new(0,2); listPad.PaddingLeft=UDim.new(0,2)
+    listPad.PaddingBottom=UDim.new(0,4); listPad.Parent=providerList
+    local grid=Instance.new("UIGridLayout"); grid.CellPadding=UDim2.fromOffset(TILE_GAP,TILE_GAP)
+    grid.CellSize=UDim2.fromOffset(300,TILE_HEIGHT); grid.SortOrder=Enum.SortOrder.LayoutOrder; grid.Parent=providerList
+    local empty=frame(pages[1],"ProviderEmptyState",UDim2.new(1,0,1,-124),UDim2.fromOffset(0,124),C.CARD); empty.Visible=false
+    corner(empty,12); stroke(empty).Transparency=0.4
+    local emptyBody=frame(empty,"EmptyContent",UDim2.new(1,-32,0,132),UDim2.fromScale(0.5,0.45)); emptyBody.AnchorPoint=Vector2.new(0.5,0.5)
+    emptyBody.BackgroundTransparency=1
+    label(emptyBody,"No matching providers",UDim2.new(1,0,0,26),nil,18,C.TEXT,true).TextXAlignment=Enum.TextXAlignment.Center
+    local emptyHint=label(emptyBody,"",UDim2.new(1,0,0,36),UDim2.fromOffset(0,30),13,C.MUTED); emptyHint.TextXAlignment=Enum.TextXAlignment.Center
+    local reset=button(emptyBody,"ResetProviderFilters","Reset search & filters",UDim2.fromOffset(200,38),UDim2.new(0.5,0,0,82))
+    reset.AnchorPoint=Vector2.new(0.5,0)
     local refreshModels,showStep,refreshConnection,renderModels
+    local function paintTile(row)
+        local selected=row.entry.id==provider.id
+        local hot=row.hover or row.focus
+        tween(row.frame,{BackgroundColor3=row.pressed and C.BG or selected and C.SELECTED or hot and C.HOVER or C.CARD})
+        tween(row.stroke,{Color=(selected or hot) and C.ACCENT or C.BORDER,Transparency=not selected and not row.focus and row.hover and 0.45 or 0})
+        row.stroke.Thickness=(selected or row.focus) and 2 or 1
+        row.mark.Visible=selected
+    end
     local function selectProvider(entry)
         if provider.id~=entry.id then provider=entry; modelId=entry.defaultModel; completed=1 end
-        for id,row in pairs(providerRows) do
-            local selected=id==provider.id
-            row.frame.BackgroundColor3=selected and C.SELECTED or C.CARD
-            row.stroke.Color=selected and C.ACCENT or C.BORDER
-            row.check.Text=selected and "Selected" or ""
-        end
+        for _,row in pairs(providerRows) do paintTile(row) end
         selectedName.Text=provider.name
         selectedAuth.Text=provider.id=="custom" and "Optional API key" or provider.noKey and "No API key" or "API key required"
         updateSummary()
     end
+    local function inFilter(entry,name)
+        return name=="All" or name=="Cloud" and not entry.isLocal and entry.id~="custom"
+            or name=="No key" and entry.noKey or name=="Vision" and entry.vision or name=="Local" and entry.isLocal
+    end
     local function filterProviders()
         local query=Trim(providerSearch.Text):lower()
-        local count=0
+        local counts,shown={},0
+        for _,name in ipairs(filters) do counts[name]=0 end
         for _,entry in ipairs(PROVIDERS) do
-            local text=entry.name.." "..entry.id
-            for _,model in ipairs(entry.models) do text=text.." "..model.id.." "..(model.label or "") end
-            local category=filter=="All" or filter=="Cloud" and not entry.isLocal and entry.id~="custom"
-                or filter=="No key" and entry.noKey or filter=="Vision" and entry.vision or filter=="Local" and entry.isLocal
-            local visible=category and (query=="" or text:lower():find(query,1,true)~=nil)
-            providerRows[entry.id].frame.Visible=visible
-            if visible then count=count+1 end
+            local row=providerRows[entry.id]
+            local matched=query=="" or row.search:find(query,1,true)~=nil
+            for _,name in ipairs(filters) do if matched and inFilter(entry,name) then counts[name]=counts[name]+1 end end
+            local visible=matched and inFilter(entry,filter)
+            row.frame.Visible=visible
+            if visible then shown=shown+1 end
+            -- Name the model when the query matched a model ID rather than the provider.
+            local model
+            if query~="" and not row.identity:find(query,1,true) then
+                for _,candidate in ipairs(entry.models) do
+                    if (candidate.id.." "..(candidate.label or "")):lower():find(query,1,true) then model=candidate; break end
+                end
+            end
+            row.detail.Text=model and "Matches "..model.id or row.summary
+            row.detail.TextColor3=model and C.ACCENT or C.MUTED
         end
-        empty.Visible=count==0; providerList.Visible=count>0
-        for name,row in pairs(filterButtons) do
-            row.button.BackgroundColor3=name==filter and C.SELECTED or C.CARD
-            row.stroke.Color=name==filter and C.ACCENT or C.BORDER
-        end
+        empty.Visible=shown==0; providerList.Visible=shown>0
+        emptyHint.Text=filter~="All" and counts.All>0
+            and string.format("%d %s outside the “%s” filter.",counts.All,counts.All==1 and "provider matches" or "providers match",filter)
+            or "Try a provider name, a model ID, or another filter."
+        resultCount.Text=shown==#PROVIDERS and #PROVIDERS.." providers" or shown.." of "..#PROVIDERS.." shown"
+        clearSearch.Visible=providerSearch.Text~=""
+        for _,row in pairs(filterButtons) do row.count=counts[row.name]; paintChip(row) end
+    end
+    local function monogram(name)
+        local words={}
+        for word in name:gsub("%b()",""):gmatch("%w[%w%.]*") do table.insert(words,word) end
+        local first,second=words[1] or "?",words[2]
+        if first:match("^%u%u") then return first:sub(1,2) end
+        if second then return (first:sub(1,1)..second:sub(1,1)):upper() end
+        local capitals=first:gsub("[^%u]","")
+        return #capitals>=2 and capitals:sub(1,2) or first:sub(1,1):upper()..first:sub(2,2)
+    end
+    local function pill(parent,text,order,tint)
+        local obj=label(parent,text,UDim2.fromOffset(0,20),nil,11,tint or C.MUTED,true)
+        obj.AutomaticSize=Enum.AutomaticSize.X; obj.TextWrapped=false; obj.TextXAlignment=Enum.TextXAlignment.Center
+        obj.LayoutOrder=order; obj.BackgroundColor3=tint or C.BG; obj.BackgroundTransparency=tint and 0.86 or 0; corner(obj,10)
+        local pad=Instance.new("UIPadding"); pad.PaddingLeft=UDim.new(0,8); pad.PaddingRight=UDim.new(0,8); pad.Parent=obj
     end
     for i,entry in ipairs(PROVIDERS) do
-        local tile=frame(providerList,"ProviderRow_"..entry.id,UDim2.fromOffset(280,106)); tile.LayoutOrder=i; corner(tile)
+        local tile=frame(providerList,"ProviderRow_"..entry.id,UDim2.fromOffset(300,TILE_HEIGHT),nil,C.CARD); tile.LayoutOrder=i; corner(tile,10)
         local outline=stroke(tile)
-        label(tile,entry.name,UDim2.new(1,-32,0,32),UDim2.fromOffset(16,12),16,C.TEXT,true)
-        label(tile,entry.isLocal and "Local server" or entry.id=="custom" and "Your endpoint" or entry.vision and "Cloud · avatar vision" or "Cloud provider",UDim2.new(1,-32,0,22),UDim2.fromOffset(16,44),12,C.MUTED)
-        label(tile,entry.id=="custom" and "Key optional" or entry.noKey and "No key needed" or "Bring your API key",UDim2.new(0.65,-16,0,20),UDim2.fromOffset(16,76),12,C.MUTED)
-        local check=label(tile,"",UDim2.new(0.35,-16,0,20),UDim2.new(0.65,0,0,76),11,C.ACCENT,true)
-        check.TextXAlignment=Enum.TextXAlignment.Right
+        -- Tinted brand monogram: identity at a glance without loading external images.
+        local badge=frame(tile,"ProviderBadge",UDim2.fromOffset(38,38),UDim2.fromOffset(14,14),entry.color)
+        badge.BackgroundTransparency=0.78; corner(badge,10); stroke(badge,entry.color).Transparency=0.5
+        label(badge,entry.id=="custom" and "</>" or monogram(entry.name),UDim2.fromScale(1,1),nil,14,C.TEXT,true).TextXAlignment=Enum.TextXAlignment.Center
+        local title=label(tile,entry.name,UDim2.new(1,-100,0,20),UDim2.fromOffset(64,14),15,C.TEXT,true)
+        title.TextWrapped=false; title.TextTruncate=Enum.TextTruncate.AtEnd
+        local summary=(entry.isLocal or entry.id=="custom") and "Lists models from your server"
+            or #entry.models==0 and "Enter any model ID" or #entry.models==1 and "1 suggested model" or #entry.models.." suggested models"
+        local detail=label(tile,summary,UDim2.new(1,-78,0,16),UDim2.fromOffset(64,36),12,C.MUTED); detail.Name="ProviderDetail"
+        detail.TextWrapped=false; detail.TextTruncate=Enum.TextTruncate.AtEnd
+        local tags=frame(tile,"ProviderTags",UDim2.new(1,-78,0,20),UDim2.fromOffset(64,60)); tags.BackgroundTransparency=1
+        local tagLayout=Instance.new("UIListLayout"); tagLayout.FillDirection=Enum.FillDirection.Horizontal; tagLayout.Padding=UDim.new(0,6)
+        tagLayout.SortOrder=Enum.SortOrder.LayoutOrder; tagLayout.Parent=tags
+        pill(tags,entry.isLocal and "Local" or entry.id=="custom" and "Custom" or "Cloud",1)
+        pill(tags,entry.id=="custom" and "Key optional" or entry.noKey and "No key" or "API key",2,entry.noKey and C.ACCENT or nil)
+        if entry.vision then pill(tags,"Vision",3,VISION) end
+        local mark=frame(tile,"SelectedMark",UDim2.fromOffset(20,20),UDim2.new(1,-14,0,14),C.ACCENT); mark.AnchorPoint=Vector2.new(1,0)
+        mark.Visible=false; corner(mark,10)
+        label(mark,"✓",UDim2.fromScale(1,1),nil,12,C.INK,true).TextXAlignment=Enum.TextXAlignment.Center
+        local search=entry.name.." "..entry.id
+        for _,model in ipairs(entry.models) do search=search.." "..model.id.." "..(model.label or "") end
+        local row={entry=entry,frame=tile,stroke=outline,mark=mark,detail=detail,summary=summary,
+            search=search:lower(),identity=(entry.name.." "..entry.id):lower(),hover=false,focus=false,pressed=false}
         local hit=Instance.new("TextButton"); hit.Name="SelectProvider_"..entry.id; hit.Size=UDim2.fromScale(1,1)
         hit.Text=""; hit.BackgroundTransparency=1; hit.Parent=tile
         connect(hit.Activated,function() selectProvider(entry) end)
-        connect(hit.MouseEnter,function() outline.Color=C.ACCENT end)
-        connect(hit.MouseLeave,function() outline.Color=provider.id==entry.id and C.ACCENT or C.BORDER end)
-        connect(hit.SelectionGained,function() outline.Thickness=2 end)
-        connect(hit.SelectionLost,function() outline.Thickness=1 end)
-        providerRows[entry.id]={frame=tile,stroke=outline,check=check}
+        connect(hit.MouseEnter,function() row.hover=true; paintTile(row) end)
+        connect(hit.MouseLeave,function() row.hover=false; row.pressed=false; paintTile(row) end)
+        connect(hit.MouseButton1Down,function() row.pressed=true; paintTile(row) end)
+        connect(hit.MouseButton1Up,function() row.pressed=false; paintTile(row) end)
+        connect(hit.SelectionGained,function() row.focus=true; paintTile(row) end)
+        connect(hit.SelectionLost,function() row.focus=false; paintTile(row) end)
+        providerRows[entry.id]=row
     end
     for name,row in pairs(filterButtons) do connect(row.button.Activated,function() filter=name; filterProviders() end) end
     connect(providerSearch:GetPropertyChangedSignal("Text"),filterProviders)
+    connect(providerSearch.Focused,function() tween(searchStroke,{Color=C.ACCENT}) end)
+    connect(providerSearch.FocusLost,function(enterPressed)
+        tween(searchStroke,{Color=C.BORDER})
+        if not enterPressed then return end
+        for _,entry in ipairs(PROVIDERS) do
+            if providerRows[entry.id].frame.Visible then selectProvider(entry); break end
+        end
+    end)
     connect(clearSearch.Activated,function() providerSearch.Text="" end)
     connect(reset.Activated,function() filter="All"; providerSearch.Text=""; filterProviders() end)
+    local function layoutProviderPage(pageWidth)
+        local inlineFilters=pageWidth>=820
+        local chipsWidth=math.min(500,math.floor(pageWidth*0.5))
+        showCounts=pageWidth>=520
+        searchField.Size=inlineFilters and UDim2.new(1,-(chipsWidth+12),0,40) or UDim2.new(1,0,0,40)
+        filterBar.Size=inlineFilters and UDim2.fromOffset(chipsWidth,40) or UDim2.new(1,0,0,34)
+        filterBar.Position=inlineFilters and UDim2.new(1,-chipsWidth,0,0) or UDim2.fromOffset(0,48)
+        local metaTop=inlineFilters and 52 or 94
+        meta.Position=UDim2.fromOffset(0,metaTop); resultCount.Visible=showCounts
+        providerList.Size=UDim2.new(1,0,1,-(metaTop+30)); providerList.Position=UDim2.fromOffset(0,metaTop+30)
+        empty.Size=providerList.Size; empty.Position=providerList.Position
+        columns=pageWidth>=852 and 3 or pageWidth>=572 and 2 or 1
+        -- 10px covers the outline inset and the scrollbar gutter.
+        grid.CellSize=UDim2.fromOffset(math.floor((pageWidth-10-(columns-1)*TILE_GAP)/columns),TILE_HEIGHT)
+        filterProviders()
+    end
+    -- Scroll a provider remembered from an earlier setup into view.
+    local function revealSelected()
+        local view=providerList.AbsoluteWindowSize
+        if closed or not view or view.Y<=0 then return end
+        local index=0
+        for _,entry in ipairs(PROVIDERS) do
+            if providerRows[entry.id].frame.Visible then index=index+1 end
+            if entry.id==provider.id then break end
+        end
+        local top=math.floor((index-1)/columns)*(TILE_HEIGHT+TILE_GAP)
+        if top+TILE_HEIGHT>view.Y then providerList.CanvasPosition=Vector2.new(0,top) end
+    end
 
     -- Connection: draft-only settings, masked keys, clear endpoint and storage controls.
     local connectionScroll=scroll(pages[2],"ConnectionForm",UDim2.fromScale(1,1),UDim2.new())
@@ -2690,8 +2831,7 @@ local function RunSetupWizard()
         card.Size=UDim2.fromOffset(width,height)
         scale.Scale=math.min(1,(viewport.X-16)/width,(viewport.Y-16)/height)
         local compact=width<740
-        local columns=width>=900 and 3 or width>=620 and 2 or 1
-        grid.CellSize=UDim2.fromOffset(math.floor((width-56-(columns-1)*12)/columns),106)
+        layoutProviderPage(width-48)
         form.Size=UDim2.new(compact and 1 or 0.65,compact and -8 or -24,0,form.Size.Y.Offset)
         guide.Visible=not compact
         if compact then
@@ -2709,13 +2849,10 @@ local function RunSetupWizard()
             summary.Visible=true
         end
         for i,row in ipairs(navButtons) do row.button.Text=compact and tostring(i).."  "..({"Service","Connect","Model","Profile","Voice"})[i] or tostring(i).."  "..({"Provider","Connection","Model","Personality","Voice Output"})[i]; row.button.TextSize=compact and 12 or 14 end
-        for i,name in ipairs(filters) do
-            filterButtons[name].button.Size=UDim2.new(0.2,-6,0,32)
-            filterButtons[name].button.Position=UDim2.new((i-1)*0.2,0,0,54)
-        end
     end
     connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit)
     refreshConnection(); selectProvider(provider); filterProviders(); showStep(1); fit()
+    task.delay(0.1,revealSelected)
     done.Event:Wait()
     gui:Destroy(); done:Destroy()
 end

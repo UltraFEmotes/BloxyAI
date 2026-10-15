@@ -6,7 +6,7 @@ A single-file Roblox client chatbot with a setup wizard, provider adapters, pers
 
 Run `main.lua` in the same client environment used for the original script. This is not a standalone Lua program or an ordinary Studio LocalScript: it relies on the existing environment's HTTP request function, `loadstring`, CoreGui access, and optionally `readfile` / `writefile`. The panel loads the stable [Rayfield Gen2](https://docs.sirius.menu/rayfield-gen2) library from `https://sirius.menu/gen2`. Native Gen2 controls, notification handles, dropdown refresh/selection, themes, and unload methods replace WindUI. Bot settings use the existing typed configuration; Rayfield does not save API keys or duplicate bot settings.
 
-1. Choose a provider in the searchable tile grid. Filters include cloud, local, no-key and vision services.
+1. Choose a provider in the searchable tile grid. Each tile shows a brand monogram and capability tags (cloud/local/custom, key requirement, vision). Filter chips for cloud, local, no-key and vision services show live match counts for the current search. Searching a model ID names the matching model on each tile, and Enter selects the first result.
 2. Enter connection details. Required keys are masked, with a Show/Hide button. Custom keys are optional; LM Studio uses its server port. Choose whether to remember keys on this device.
 3. Choose a model, search suggestions, or enter an exact ID. Custom and local servers fetch model lists here. Endpoints accept a server root, a `/v1` base URL, or a complete `/chat/completions` URL.
 4. Select a personality and edit its prompt and identity.
