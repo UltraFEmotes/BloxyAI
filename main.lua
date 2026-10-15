@@ -65,6 +65,7 @@ local Players      = game:GetService("Players")
 local TCS          = game:GetService("TextChatService")
 local HttpService  = game:GetService("HttpService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 local CoreGui      = game:GetService("CoreGui")
 
 local LP = Players.LocalPlayer
@@ -509,6 +510,7 @@ local Cfg = {
     MemoryLimit    = 30,
     LMStudioPort    = 1234,
     Language        = "Auto",
+    SetupStyle      = "Auto",
     TTSEnabled      = false,
     TTSPrivate      = false,
     TTSProvider     = "openai",
@@ -545,7 +547,7 @@ local SAVE_KEYS = {
     "UseCustomVision", "AvatarVisionTool", "CustomVisionEndpoint", "CustomVisionKey", "CustomVisionModel", "CustomVisionModelsEndpoint",
     "TTSEnabled", "TTSPrivate", "TTSProvider", "TTSEndpoint", "TTSOpenAIKey", "TTSElevenLabsKey", "TTSCustomKey", "TTSModel", "TTSVoice",
     "TTSModelsPath", "TTSVoicesPath", "TTSFormat", "TTSPcmRate", "TTSDevice", "TTSVolume", "TTSBridgeURL", "TTSBridgeKey",
-    "RememberHistory", "SaveAPIKeys", "QueueLimit", "QueueMaxAge", "GlobalCooldown", "RequestTimeout", "MemoryLimit"
+    "SetupStyle", "RememberHistory", "SaveAPIKeys", "QueueLimit", "QueueMaxAge", "GlobalCooldown", "RequestTimeout", "MemoryLimit"
 }
 
 local KEY_MAP = {
@@ -592,6 +594,7 @@ local function NormalizeCfg()
     if not found then Cfg.Provider = CONFIG_DEFAULTS.Provider; Cfg.Model = CONFIG_DEFAULTS.Model; Cfg.SetupComplete = false end
     Cfg.BotName = Truncate(Trim(Cfg.BotName) ~= "" and Trim(Cfg.BotName) or "AIBot", 32)
     Cfg.ChatPrefix = Truncate(Cfg.ChatPrefix, 40)
+    if Cfg.SetupStyle ~= "Windows" and Cfg.SetupStyle ~= "macOS" then Cfg.SetupStyle = "Auto" end
     if Cfg.TTSProvider~="openai" and Cfg.TTSProvider~="elevenlabs" and Cfg.TTSProvider~="custom" then Cfg.TTSProvider="openai" end
     if Cfg.TTSFormat~="wav" and Cfg.TTSFormat~="pcm" then Cfg.TTSFormat="wav" end
     if not table.find({16000,22050,24000,44100,48000},Cfg.TTSPcmRate) then Cfg.TTSPcmRate=24000 end
@@ -1972,14 +1975,14 @@ local function BuildVoiceOutputControls(tab,cfg,options)
     end
     local providerLabels={openai="OpenAI",elevenlabs="ElevenLabs",custom="Custom (OpenAI-compatible)"}
     local keyFields={openai="TTSOpenAIKey",elevenlabs="TTSElevenLabsKey",custom="TTSCustomKey"}
-    local platform="macos"
+    local platform=options.platform=="windows" and "windows" or "macos"
     local guides={
         macos="1. Install BlackHole 2ch: github.com/ExistentialAudio/BlackHole\n2. Run voice/start-macos.command (Python 3.10+). Keep its terminal open.\n3. Paste the helper pairing key below and check the helper.\n4. Choose BlackHole 2ch as the helper output AND Roblox's microphone input. Keep game audio on headphones.\n5. Choose a TTS provider, model and voice. Test the voice, then enable spoken replies.",
         windows="1. Install VB-CABLE: vb-audio.com/Cable — restart Windows.\n2. Run voice\\start-windows.cmd (Python 3.10+). Keep its terminal open.\n3. Paste the helper pairing key below and check the helper.\n4. Choose CABLE Input as the helper output and CABLE Output as Roblox's microphone input. Keep game audio on headphones.\n5. Choose a TTS provider, model and voice. Test the voice, then enable spoken replies.",
     }
     tab:CreateSection({name="1 · Route audio to voice chat"})
-    local guide=tab:CreateText({name="macOS · BlackHole setup",text=guides.macos})
-    local platformPicker=tab:CreateDropdown({name="Voice setup platform",options={"macOS (BlackHole)","Windows (VB-CABLE)"},value="macOS (BlackHole)",multiSelect=false,forgetState=true,callback=function(value)
+    local guide=tab:CreateText({name=platform=="macos" and "macOS · BlackHole setup" or "Windows · VB-CABLE setup",text=guides[platform]})
+    local platformPicker=tab:CreateDropdown({name="Voice setup platform",options={"macOS (BlackHole)","Windows (VB-CABLE)"},value=platform=="macos" and "macOS (BlackHole)" or "Windows (VB-CABLE)",multiSelect=false,forgetState=true,callback=function(value)
         platform=value=="Windows (VB-CABLE)" and "windows" or "macos"
         guide:SetTitle(platform=="macos" and "macOS · BlackHole setup" or "Windows · VB-CABLE setup"); guide:Set(guides[platform])
     end})
@@ -2168,14 +2171,1185 @@ local function BuildVoiceOutputControls(tab,cfg,options)
     end}
 end
 
+-- ═══════════════════════════════════════
+-- SETUP WIZARD
+-- Native-feeling setup: macOS Liquid Glass on Apple devices, Windows 11 (Fluent) everywhere else.
+-- Both skins share one controller, so validation, discovery, voice and launch behave identically.
+local function DetectDevicePlatform()
+    local ok,platform=pcall(function() return UserInputService:GetPlatform() end)
+    if not ok or platform==nil then return nil end
+    if platform==Enum.Platform.OSX or platform==Enum.Platform.IOS then return "macos" end
+    if platform==Enum.Platform.Windows then return "windows" end
+    return nil
+end
+local DEVICE_PLATFORM=DetectDevicePlatform()
+local function SetupStyle()
+    if Cfg.SetupStyle=="Windows" or Cfg.SetupStyle=="macOS" then return Cfg.SetupStyle end
+    return DEVICE_PLATFORM=="macos" and "macOS" or "Windows"
+end
+
+local SetupSkins=(function()
+    local function font(name,fallback)
+        local ok,value=pcall(function() return Enum.Font[name] end)
+        return ok and value or fallback
+    end
+    local F={
+        display=font("BuilderSansExtraBold",Enum.Font.GothamBlack), bold=font("BuilderSansBold",Enum.Font.GothamBold),
+        medium=font("BuilderSansMedium",Enum.Font.GothamMedium), body=font("BuilderSans",Enum.Font.Gotham),
+        mono=font("RobotoMono",Enum.Font.Code),
+    }
+    local WHITE,BLACK=Color3.new(1,1,1),Color3.new(0,0,0)
+    local function new(class,props,parent)
+        local obj=Instance.new(class)
+        for key,value in pairs(props) do obj[key]=value end
+        obj.Parent=parent
+        return obj
+    end
+    local function corner(obj,radius) return new("UICorner",{CornerRadius=UDim.new(0,radius)},obj) end
+    -- Border mode matters: on text objects the default mode outlines the glyphs instead of the box.
+    local function stroke(obj,color,transparency,thickness)
+        return new("UIStroke",{Color=color,Transparency=transparency or 0,Thickness=thickness or 1,
+            ApplyStrokeMode=Enum.ApplyStrokeMode.Border},obj)
+    end
+    local function pad(obj,top,right,bottom,left)
+        return new("UIPadding",{PaddingTop=UDim.new(0,top),PaddingRight=UDim.new(0,right or top),
+            PaddingBottom=UDim.new(0,bottom or top),PaddingLeft=UDim.new(0,left or right or top)},obj)
+    end
+    local function fade(points)
+        local keypoints={}
+        for _,point in ipairs(points) do table.insert(keypoints,NumberSequenceKeypoint.new(point[1],point[2])) end
+        return NumberSequence.new(keypoints)
+    end
+    local function gradient(obj,colors,rotation,transparency)
+        local keypoints={}
+        for i,color in ipairs(colors) do table.insert(keypoints,ColorSequenceKeypoint.new((i-1)/(#colors-1),color)) end
+        return new("UIGradient",{Color=ColorSequence.new(keypoints),Rotation=rotation or 0,
+            Transparency=transparency or NumberSequence.new(0)},obj)
+    end
+    local function text(parent,props,base)
+        local obj=new("TextLabel",{BackgroundTransparency=1,BorderSizePixel=0,Font=F.body,TextColor3=base or WHITE,TextSize=13,
+            TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Center,
+            TextTruncate=Enum.TextTruncate.AtEnd},parent)
+        for key,value in pairs(props) do obj[key]=value end
+        return obj
+    end
+    local function tween(obj,seconds,goal,style,direction)
+        local animation=TweenService:Create(obj,TweenInfo.new(seconds,style or Enum.EasingStyle.Quint,
+            direction or Enum.EasingDirection.Out),goal)
+        animation:Play()
+        return animation
+    end
+    local function monogram(provider)
+        if provider.id=="custom" then return "</>" end
+        local words={}
+        for word in provider.name:gsub("%b()",""):gmatch("%w[%w%.]*") do table.insert(words,word) end
+        local first,second=words[1] or "?",words[2]
+        if first:match("^%u%u") then return first:sub(1,2) end
+        if second then return (first:sub(1,1)..second:sub(1,1)):upper() end
+        local capitals=first:gsub("[^%u]","")
+        return #capitals>=2 and capitals:sub(1,2) or first:sub(1,1):upper()..first:sub(2,2)
+    end
+    -- Magnifier and chevrons drawn from frames so they never depend on font glyph coverage.
+    local function searchGlyph(parent,x,color)
+        local ring=new("Frame",{Size=UDim2.fromOffset(10,10),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0,x,0.5,-2),
+            BackgroundTransparency=1},parent)
+        corner(ring,5); stroke(ring,color,0,1.6)
+        local handle=new("Frame",{Size=UDim2.fromOffset(5,1.6),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0,x+6,0.5,4),
+            Rotation=45,BackgroundColor3=color,BorderSizePixel=0},parent)
+        corner(handle,1)
+    end
+    local function chevron(parent,position,color,direction)
+        local holder=new("Frame",{Size=UDim2.fromOffset(12,12),AnchorPoint=Vector2.new(0.5,0.5),Position=position,
+            BackgroundTransparency=1},parent)
+        local specs=direction=="right" and {{0,-2.2,45},{0,2.2,-45}} or direction=="left" and {{0,-2.2,-45},{0,2.2,45}}
+            or direction=="updown" and {{-2,-3,-45},{2,-3,45},{-2,3,45},{2,3,-45}} or {{-2.2,0,45},{2.2,0,-45}}
+        for _,spec in ipairs(specs) do
+            local stem=new("Frame",{Size=UDim2.fromOffset(direction=="updown" and 5 or 7,1.6),AnchorPoint=Vector2.new(0.5,0.5),
+                Position=UDim2.new(0.5,spec[1],0.5,spec[2]),Rotation=spec[3],BackgroundColor3=color,BorderSizePixel=0},holder)
+            corner(stem,1)
+        end
+        return holder
+    end
+    local function softShadow(parent,radius,strength)
+        for i,spread in ipairs({14,30,52}) do
+            local layer=new("Frame",{Size=UDim2.new(1,spread,1,spread),AnchorPoint=Vector2.new(0.5,0.5),
+                Position=UDim2.new(0.5,0,0.5,6+i*3),BackgroundColor3=BLACK,BackgroundTransparency=(strength or 0.6)+i*0.1,
+                BorderSizePixel=0,ZIndex=0},parent)
+            corner(layer,radius+spread/2)
+        end
+    end
+    -- Masks a key while keeping the real text in the TextBox.
+    local function maskable(box,overlay,button)
+        local revealed=false
+        local function refresh()
+            box.TextTransparency=(not revealed and box.Text~="") and 1 or 0
+            overlay.Text=revealed and "" or string.rep("•",math.min(#box.Text,28))
+            button.Text=revealed and "Hide" or "Show"
+        end
+        button.Activated:Connect(function() revealed=not revealed; refresh() end)
+        box:GetPropertyChangedSignal("Text"):Connect(refresh)
+        refresh()
+    end
+    local function scrollList(parent,name,gap,padding)
+        local list=new("ScrollingFrame",{Name=name or "PageScroll",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,BorderSizePixel=0,
+            ScrollBarThickness=3,ScrollBarImageColor3=Color3.fromRGB(120,120,126),CanvasSize=UDim2.new(),
+            AutomaticCanvasSize=Enum.AutomaticSize.Y,ScrollingDirection=Enum.ScrollingDirection.Y},parent)
+        new("UIListLayout",{Padding=UDim.new(0,gap),SortOrder=Enum.SortOrder.LayoutOrder},list)
+        pad(list,padding or 1,12,10,1)
+        return list
+    end
+    -- Opens a flyout above its anchor when there is no room below inside the page.
+    local function placeFlyout(flyout,anchor,area,height)
+        local below=true
+        local ok,space=pcall(function()
+            local bottom=area.AbsolutePosition.Y+area.AbsoluteSize.Y
+            local top=anchor.AbsolutePosition.Y+anchor.AbsoluteSize.Y
+            return {bottom-top,anchor.AbsolutePosition.Y-area.AbsolutePosition.Y}
+        end)
+        if ok and type(space)=="table" and space[1]<height+8 and space[2]>space[1] then below=false end
+        flyout.AnchorPoint=Vector2.new(0,below and 0 or 1)
+        flyout.Position=below and UDim2.new(0,0,1,4) or UDim2.new(0,0,0,-4)
+    end
+    local kit={F=F,new=new,corner=corner,stroke=stroke,pad=pad,text=text,tween=tween,monogram=monogram}
+
+    -- ───────────────────────── Windows 11 (Fluent) ─────────────────────────
+    local function Windows(ctx)
+        local C={
+            mica=Color3.fromRGB(32,32,32), micaTint=Color3.fromRGB(36,40,52), layer=Color3.fromRGB(39,39,39),
+            layerEdge=Color3.fromRGB(29,29,29), card=Color3.fromRGB(43,43,43), cardHover=Color3.fromRGB(50,50,50),
+            cardEdge=Color3.fromRGB(52,52,52), control=Color3.fromRGB(45,45,45), controlHover=Color3.fromRGB(51,51,51),
+            controlPressed=Color3.fromRGB(39,39,39), controlEdge=Color3.fromRGB(58,58,58), input=Color3.fromRGB(44,44,44),
+            inputActive=Color3.fromRGB(30,30,30), underline=Color3.fromRGB(138,138,138), flyout=Color3.fromRGB(44,44,44),
+            text=Color3.fromRGB(255,255,255), sub=Color3.fromRGB(205,205,205), dim=Color3.fromRGB(157,157,157),
+            disabled=Color3.fromRGB(110,110,110), accent=Color3.fromRGB(96,205,255), accentHover=Color3.fromRGB(88,187,232),
+            accentPressed=Color3.fromRGB(78,163,203), onAccent=BLACK, close=Color3.fromRGB(196,43,28),
+            info=Color3.fromRGB(43,43,43), success=Color3.fromRGB(57,61,27), successIcon=Color3.fromRGB(108,203,95),
+            warning=Color3.fromRGB(67,53,25), warningIcon=Color3.fromRGB(252,225,0), error=Color3.fromRGB(255,153,164),
+        }
+        local S={colors={secondary=C.dim,error=C.error,accent=C.accent},nextLabel="Next",maxW=1000,maxH=680}
+        local TITLE_H,FOOT_H=40,64
+        local paneWidth=244
+        local function caption(parent,props)
+            return text(parent,{Name=props.name,Text=props.text or "",Font=props.font or F.body,TextSize=props.size or 12,
+                TextColor3=props.color or C.dim,Size=props.box or UDim2.new(1,0,0,16),Position=props.position or UDim2.new(),
+                AnchorPoint=props.anchor or Vector2.new(),TextXAlignment=props.align or Enum.TextXAlignment.Left,ZIndex=props.z or 1})
+        end
+        local function button(parent,props)
+            local accent=props.primary
+            local b=new("TextButton",{Name=props.name,Text=props.text or "",Font=F.medium,TextSize=14,AutoButtonColor=false,
+                TextColor3=accent and C.onAccent or C.text,BackgroundColor3=accent and C.accent or C.control,BorderSizePixel=0,
+                Size=props.size or UDim2.fromOffset(120,32),Position=props.position or UDim2.new(),AnchorPoint=props.anchor or Vector2.new(),
+                ZIndex=props.z or 1,TextTruncate=Enum.TextTruncate.AtEnd},parent)
+            corner(b,4); stroke(b,accent and C.accentHover or C.controlEdge)
+            local idle,hot,down=accent and C.accent or C.control,accent and C.accentHover or C.controlHover,accent and C.accentPressed or C.controlPressed
+            b.MouseEnter:Connect(function() tween(b,0.1,{BackgroundColor3=hot}) end)
+            b.MouseLeave:Connect(function() tween(b,0.1,{BackgroundColor3=idle,TextColor3=accent and C.onAccent or C.text}) end)
+            b.MouseButton1Down:Connect(function() tween(b,0.05,{BackgroundColor3=down,TextColor3=accent and Color3.fromRGB(20,50,64) or C.sub}) end)
+            b.MouseButton1Up:Connect(function() tween(b,0.1,{BackgroundColor3=hot,TextColor3=accent and C.onAccent or C.text}) end)
+            return b
+        end
+        S.button=button
+
+        -- Shell: title bar, navigation pane, content layer, command footer.
+        local root=new("Frame",{Name="SetupWindow",Size=UDim2.fromOffset(940,620),AnchorPoint=Vector2.new(0.5,0.5),
+            Position=UDim2.fromScale(0.5,0.5),BackgroundTransparency=1},ctx.gui)
+        S.root=root; S.scale=new("UIScale",{},root)
+        local shadowHolder=new("Frame",{Size=UDim2.fromScale(1,1),BackgroundTransparency=1},root)
+        softShadow(shadowHolder,8)
+        local window=new("Frame",{Name="Window",Size=UDim2.fromScale(1,1),BackgroundColor3=WHITE,BorderSizePixel=0,
+            ClipsDescendants=true},root)
+        corner(window,8); stroke(window,C.controlEdge)
+        gradient(window,{C.micaTint,C.mica,C.mica},25)
+        local titleBar=new("Frame",{Name="TitleBar",Size=UDim2.new(1,0,0,TITLE_H),BackgroundTransparency=1},window)
+        local appGlyph=new("Frame",{Size=UDim2.fromOffset(16,16),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,16,0.5,0),
+            BackgroundColor3=WHITE,BorderSizePixel=0},titleBar)
+        corner(appGlyph,4); gradient(appGlyph,{C.accent,Color3.fromRGB(0,120,212)},135)
+        caption(titleBar,{text="BloxyAI Setup  ·  v"..VERSION,color=C.text,box=UDim2.fromOffset(240,TITLE_H),position=UDim2.fromOffset(44,0)})
+        local minimize=new("TextButton",{Name="Minimize",Text="—",Font=F.body,TextSize=12,TextColor3=C.text,AutoButtonColor=false,
+            Size=UDim2.fromOffset(46,TITLE_H),AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-46,0,0),BackgroundColor3=WHITE,
+            BackgroundTransparency=1,BorderSizePixel=0},titleBar)
+        local close=new("TextButton",{Name="CloseSetup",Text="✕",Font=F.body,TextSize=13,TextColor3=C.text,AutoButtonColor=false,
+            Size=UDim2.fromOffset(46,TITLE_H),AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),BackgroundColor3=C.close,
+            BackgroundTransparency=1,BorderSizePixel=0},titleBar)
+        S.closeButton=close
+        minimize.MouseEnter:Connect(function() tween(minimize,0.08,{BackgroundTransparency=0.94}) end)
+        minimize.MouseLeave:Connect(function() tween(minimize,0.08,{BackgroundTransparency=1}) end)
+        close.MouseEnter:Connect(function() tween(close,0.08,{BackgroundTransparency=0}) end)
+        close.MouseLeave:Connect(function() tween(close,0.08,{BackgroundTransparency=1}) end)
+        local minimized,restoreHeight=false,620
+        minimize.Activated:Connect(function()
+            minimized=not minimized
+            if minimized then restoreHeight=root.Size.Y.Offset end
+            tween(root,0.25,{Size=UDim2.fromOffset(root.Size.X.Offset,minimized and TITLE_H or restoreHeight)})
+        end)
+        S.isMinimized=function() return minimized end
+
+        local pane=new("Frame",{Name="NavigationPane",Size=UDim2.new(0,paneWidth,1,-TITLE_H),Position=UDim2.fromOffset(0,TITLE_H),
+            BackgroundTransparency=1},window)
+        local navBack=new("TextButton",{Name="NavBack",Text="←",Font=F.body,TextSize=16,TextColor3=C.text,AutoButtonColor=false,
+            Size=UDim2.fromOffset(40,36),Position=UDim2.fromOffset(6,0),BackgroundColor3=WHITE,BackgroundTransparency=1,BorderSizePixel=0},pane)
+        corner(navBack,4)
+        navBack.MouseEnter:Connect(function() tween(navBack,0.1,{BackgroundTransparency=0.94}) end)
+        navBack.MouseLeave:Connect(function() tween(navBack,0.1,{BackgroundTransparency=1}) end)
+        navBack.Activated:Connect(function() ctx.onBack() end)
+        local indicator=new("Frame",{Name="NavIndicator",Size=UDim2.fromOffset(3,16),AnchorPoint=Vector2.new(0,0.5),
+            Position=UDim2.fromOffset(6,64),BackgroundColor3=C.accent,BorderSizePixel=0,ZIndex=3},pane)
+        corner(indicator,2)
+        local GLYPHS={"◎","⇄","◇","☺","♪"}
+        local navItems={}
+        for i,name in ipairs(ctx.steps) do
+            local item=new("TextButton",{Name="SetupNav_"..i,Text="",AutoButtonColor=false,Size=UDim2.new(1,-12,0,36),
+                Position=UDim2.fromOffset(6,46+(i-1)*40),BackgroundColor3=WHITE,BackgroundTransparency=1,BorderSizePixel=0},pane)
+            corner(item,4)
+            local glyph=caption(item,{text=GLYPHS[i],size=15,color=C.text,box=UDim2.fromOffset(20,36),position=UDim2.fromOffset(12,0),
+                align=Enum.TextXAlignment.Center})
+            local label=caption(item,{name="Label",text=name,size=14,color=C.text,box=UDim2.new(1,-56,1,0),position=UDim2.fromOffset(46,0)})
+            navItems[i]={item=item,glyph=glyph,label=label}
+            item.MouseEnter:Connect(function() if item.BackgroundTransparency==1 then tween(item,0.1,{BackgroundTransparency=0.96}) end end)
+            item.MouseLeave:Connect(function() if not navItems[i].active then tween(item,0.1,{BackgroundTransparency=1}) end end)
+            item.Activated:Connect(function() ctx.onNav(i) end)
+        end
+        local paneNote=caption(pane,{text="Windows 11 style",color=C.disabled,box=UDim2.new(1,-32,0,16),position=UDim2.new(0,18,1,-30)})
+        S.setNav=function(step,furthest)
+            for i,entry in ipairs(navItems) do
+                entry.active=i==step
+                entry.item.BackgroundTransparency=i==step and 0.94 or 1
+                entry.label.Font=i==step and F.medium or F.body
+                local color=i<=furthest and C.text or C.disabled
+                entry.label.TextColor3=color; entry.glyph.TextColor3=color
+            end
+            tween(indicator,0.25,{Position=UDim2.fromOffset(6,46+(step-1)*40+18)})
+            navBack.TextColor3=step>1 and C.text or C.disabled
+        end
+
+        local layer=new("Frame",{Name="ContentLayer",Size=UDim2.new(1,-paneWidth,1,-TITLE_H),Position=UDim2.fromOffset(paneWidth,TITLE_H),
+            BackgroundColor3=C.layer,BorderSizePixel=0},window)
+        corner(layer,8); stroke(layer,C.layerEdge)
+        new("Frame",{Size=UDim2.new(0,8,1,0),Position=UDim2.new(1,-8,0,0),BackgroundColor3=C.layer,BorderSizePixel=0},layer)
+        new("Frame",{Size=UDim2.new(1,0,0,8),Position=UDim2.new(0,0,1,-8),BackgroundColor3=C.layer,BorderSizePixel=0},layer)
+        local heading=text(layer,{Name="SetupHeading",Font=F.bold,TextSize=28,Size=UDim2.new(1,-56,0,36),Position=UDim2.fromOffset(28,18)},C.text)
+        local subtitle=caption(layer,{name="SetupSubtitle",size=14,color=C.sub,box=UDim2.new(1,-56,0,20),position=UDim2.fromOffset(28,58)})
+        S.setHeader=function(title,sub) heading.Text=title; subtitle.Text=sub end
+        S.pageArea=new("Frame",{Name="SetupPages",Size=UDim2.new(1,-56,1,-(96+FOOT_H+10)),Position=UDim2.fromOffset(28,96),
+            BackgroundTransparency=1,ClipsDescendants=true},layer)
+        local footer=new("Frame",{Name="SetupFooter",Size=UDim2.new(1,0,0,FOOT_H),AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),
+            BackgroundColor3=C.mica,BorderSizePixel=0},layer)
+        new("Frame",{Size=UDim2.new(1,0,0,1),BackgroundColor3=C.layerEdge,BorderSizePixel=0},footer)
+        S.errorLabel=caption(footer,{name="SetupError",size=13,color=C.error,box=UDim2.new(1,-430,1,0),position=UDim2.fromOffset(28,0)})
+        S.errorLabel.TextWrapped=true; S.errorLabel.TextTruncate=Enum.TextTruncate.None
+        local cancel=button(footer,{name="SetupCancel",text="Cancel",anchor=Vector2.new(1,0.5),position=UDim2.new(1,-24,0.5,0),size=UDim2.fromOffset(110,32)})
+        S.continueButton=button(footer,{name="SetupContinue",text="Next",primary=true,anchor=Vector2.new(1,0.5),
+            position=UDim2.new(1,-142,0.5,0),size=UDim2.fromOffset(170,32)})
+        S.backButton=button(footer,{name="SetupBack",text="Back",anchor=Vector2.new(1,0.5),position=UDim2.new(1,-320,0.5,0),size=UDim2.fromOffset(110,32)})
+        cancel.Activated:Connect(function() ctx.onClose() end)
+        S.setError=function(message) S.errorLabel.Text=message~="" and "⚠  "..message or "" end
+        local toast=new("Frame",{Size=UDim2.fromOffset(360,72),AnchorPoint=Vector2.new(1,1),Position=UDim2.new(1,380,1,-16),
+            BackgroundColor3=C.flyout,BorderSizePixel=0,ZIndex=30},window)
+        corner(toast,8); stroke(toast,C.controlEdge)
+        caption(toast,{text="BloxyAI Setup",box=UDim2.new(1,-32,0,16),position=UDim2.fromOffset(16,12),z=31})
+        local toastText=text(toast,{TextWrapped=true,TextYAlignment=Enum.TextYAlignment.Top,Size=UDim2.new(1,-32,0,36),
+            Position=UDim2.fromOffset(16,30),ZIndex=31,TextTruncate=Enum.TextTruncate.None},C.text)
+        local toastToken=0
+        S.toast=function(message)
+            toastToken=toastToken+1
+            local token=toastToken
+            toastText.Text=message
+            tween(toast,0.35,{Position=UDim2.new(1,-16,1,-16)})
+            task.delay(3,function() if token==toastToken and ctx.gui.Parent then tween(toast,0.3,{Position=UDim2.new(1,380,1,-16)}) end end)
+        end
+        S.enter=function(page)
+            page.Position=UDim2.fromOffset(0,28)
+            tween(page,0.3,{Position=UDim2.new()})
+        end
+        S.drag=titleBar
+        S.fit=function(width,height,compact)
+            root.Size=UDim2.fromOffset(width,minimized and TITLE_H or height); restoreHeight=height
+            paneWidth=compact and 52 or 244
+            pane.Size=UDim2.new(0,paneWidth,1,-TITLE_H)
+            layer.Size=UDim2.new(1,-paneWidth,1,-TITLE_H); layer.Position=UDim2.fromOffset(paneWidth,TITLE_H)
+            for _,entry in ipairs(navItems) do entry.label.Visible=not compact end
+            paneNote.Visible=not compact
+            S.errorLabel.Size=UDim2.new(1,compact and -330 or -430,1,0)
+            S.backButton.Position=UDim2.new(1,compact and -300 or -320,0.5,0)
+            S.backButton.Size=UDim2.fromOffset(compact and 80 or 110,32)
+            cancel.Visible=not compact
+            S.continueButton.Position=UDim2.new(1,compact and -24 or -142,0.5,0)
+            heading.TextSize=compact and 22 or 28
+        end
+
+        -- Controls.
+        S.scrollPage=function(parent,name) return scrollList(parent,name,4) end
+        local function card(parent,props)
+            local frame=new(props.clickable and "TextButton" or "Frame",{Name=props.name or "Card",Size=UDim2.new(1,0,0,props.height or 68),
+                BackgroundColor3=C.card,BorderSizePixel=0,LayoutOrder=props.order or 0,AutomaticSize=props.auto and Enum.AutomaticSize.Y or Enum.AutomaticSize.None},parent)
+            if props.clickable then frame.Text=""; frame.AutoButtonColor=false end
+            corner(frame,6); stroke(frame,C.cardEdge,0.3)
+            if props.clickable then
+                frame.MouseEnter:Connect(function() tween(frame,0.1,{BackgroundColor3=C.cardHover}) end)
+                frame.MouseLeave:Connect(function() tween(frame,0.1,{BackgroundColor3=C.card}) end)
+            end
+            return frame
+        end
+        S.group=function(parent,props)
+            local holder=new("Frame",{Name=props.name or "Group",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+                BackgroundTransparency=1,LayoutOrder=props.order or 0},parent)
+            new("UIListLayout",{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},holder)
+            local G={frame=holder,rows={}}
+            if props.title then
+                local header=caption(holder,{text=props.title,font=F.bold,size=14,color=C.text,box=UDim2.new(1,0,0,34)})
+                header.LayoutOrder=0; header.TextYAlignment=Enum.TextYAlignment.Bottom; pad(header,0,0,6,2)
+            end
+            local footnote
+            G.setFootnote=function(message)
+                if not footnote then
+                    footnote=caption(holder,{name="Footnote",size=12,color=C.dim,box=UDim2.new(1,0,0,0)})
+                    footnote.AutomaticSize=Enum.AutomaticSize.Y; footnote.TextWrapped=true; footnote.TextTruncate=Enum.TextTruncate.None
+                    footnote.LayoutOrder=100000; pad(footnote,2,4,0,2)
+                end
+                footnote.Text=message
+            end
+            if props.footnote then G.setFootnote(props.footnote) end
+            local count=0
+            G.row=function(rowProps)
+                count=count+1
+                local height=rowProps.height or (rowProps.wrap and 84 or rowProps.subtitle and 62 or 52)
+                local frame=card(holder,{name=rowProps.name,clickable=rowProps.clickable,height=height,order=count,auto=rowProps.auto})
+                local x=16
+                if rowProps.icon then
+                    local icon=new("Frame",{Size=UDim2.fromOffset(32,32),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,16,0,height/2),
+                        BackgroundColor3=rowProps.iconColor or C.accent,BorderSizePixel=0},frame)
+                    corner(icon,6)
+                    text(icon,{Size=UDim2.fromScale(1,1),Text=rowProps.icon,Font=F.bold,TextSize=12,
+                        TextXAlignment=Enum.TextXAlignment.Center,TextStrokeTransparency=0.85})
+                    x=62
+                end
+                local right=rowProps.right or 0
+                local title,sub,body
+                if rowProps.auto then
+                    pad(frame,14,16,14,x)
+                    local stack=new("Frame",{Size=UDim2.fromScale(1,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1},frame)
+                    new("UIListLayout",{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},stack)
+                    title=caption(stack,{name="Title",text=rowProps.title,size=14,color=C.text,box=UDim2.new(1,0,0,20)})
+                    title.LayoutOrder=1
+                    body=caption(stack,{name="Body",text=rowProps.body or "",size=12,color=C.dim,box=UDim2.new(1,0,0,0)})
+                    body.AutomaticSize=Enum.AutomaticSize.Y; body.TextWrapped=true; body.TextTruncate=Enum.TextTruncate.None; body.LayoutOrder=2
+                else
+                    title=caption(frame,{name="Title",text=rowProps.title,size=14,color=C.text,
+                        box=UDim2.new(1,-(x+right+16),0,rowProps.subtitle and 20 or height),position=UDim2.fromOffset(x,rowProps.subtitle and 14 or 0)})
+                    if rowProps.subtitle then
+                        sub=caption(frame,{name=rowProps.subtitleName or "Subtitle",text=rowProps.subtitle,box=UDim2.new(1,-(x+right+16),0,rowProps.wrap and 34 or 16),
+                            position=UDim2.fromOffset(x,rowProps.wrap and 36 or 34),font=rowProps.monoSubtitle and F.mono or F.body})
+                        if rowProps.wrap then sub.TextWrapped=true; sub.TextTruncate=Enum.TextTruncate.None; sub.TextYAlignment=Enum.TextYAlignment.Top end
+                    end
+                    if rowProps.action then chevron(frame,UDim2.new(1,-24,0.5,0),C.sub,"right") end
+                end
+                table.insert(G.rows,frame)
+                return frame,title,sub,body
+            end
+            G.clear=function()
+                for _,frame in ipairs(G.rows) do frame:Destroy() end
+                G.rows={}; count=0
+            end
+            return G
+        end
+        S.mark=function(row)
+            local ring=new("Frame",{Name="SelectedMark",Size=UDim2.fromOffset(20,20),AnchorPoint=Vector2.new(0.5,0.5),
+                Position=UDim2.new(1,-26,0.5,0),BackgroundColor3=C.accent,BackgroundTransparency=1,BorderSizePixel=0},row)
+            corner(ring,10)
+            local edge=stroke(ring,C.sub,0.3)
+            local dot=new("Frame",{Size=UDim2.fromOffset(0,0),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),
+                BackgroundColor3=C.onAccent,BorderSizePixel=0},ring)
+            corner(dot,5)
+            return function(on)
+                ring.Visible=true
+                ring.BackgroundTransparency=on and 0 or 1; edge.Transparency=on and 1 or 0.3
+                tween(dot,0.15,{Size=on and UDim2.fromOffset(8,8) or UDim2.fromOffset(0,0)})
+                ring:SetAttribute("Selected",on)
+            end
+        end
+        -- TextBox with Fluent's bottom stroke that becomes a 2px accent line on focus.
+        S.field=function(row,props)
+            local frame=new("Frame",{Name=props.name.."Box",BackgroundColor3=C.input,BorderSizePixel=0,ClipsDescendants=true},row)
+            if props.multiline then
+                local top=props.top or 42
+                frame.Size=UDim2.new(1,-32,1,-(top+10)); frame.Position=UDim2.fromOffset(16,top)
+            else
+                frame.Size=UDim2.new(props.widthScale or 0.5,0,0,32); frame.AnchorPoint=Vector2.new(1,0.5); frame.Position=UDim2.new(1,-(props.inset or 16),0.5,0)
+            end
+            corner(frame,4); stroke(frame,C.controlEdge)
+            local line=new("Frame",{Size=UDim2.new(1,0,0,1),AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),
+                BackgroundColor3=C.underline,BorderSizePixel=0,ZIndex=3},frame)
+            local right=props.secret and 56 or props.clear and 60 or 0
+            local box=new("TextBox",{Name=props.name,Text=props.value or "",PlaceholderText=props.placeholder or "",PlaceholderColor3=C.dim,
+                TextColor3=C.text,Font=props.mono and F.mono or F.body,TextSize=14,ClearTextOnFocus=false,BackgroundTransparency=1,
+                MultiLine=props.multiline==true,TextWrapped=props.multiline==true,TextXAlignment=Enum.TextXAlignment.Left,
+                TextYAlignment=props.multiline and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center,
+                Size=UDim2.new(1,-(22+right),1,props.multiline and -16 or 0),Position=UDim2.fromOffset(11,props.multiline and 7 or 0),ZIndex=2},frame)
+            local active=false
+            box.Focused:Connect(function()
+                active=true
+                tween(frame,0.1,{BackgroundColor3=C.inputActive}); line.BackgroundColor3=C.accent; line.Size=UDim2.new(1,0,0,2)
+            end)
+            box.FocusLost:Connect(function(enter)
+                active=false
+                tween(frame,0.1,{BackgroundColor3=C.input}); line.BackgroundColor3=C.underline; line.Size=UDim2.new(1,0,0,1)
+                if props.onFocusLost then props.onFocusLost(enter) end
+            end)
+            frame.MouseEnter:Connect(function() if not active then tween(frame,0.1,{BackgroundColor3=C.controlHover}) end end)
+            frame.MouseLeave:Connect(function() if not active then tween(frame,0.1,{BackgroundColor3=C.input}) end end)
+            if props.secret then
+                local overlay=text(box,{Size=UDim2.fromScale(1,1),TextSize=14,ZIndex=3},C.text)
+                local reveal=new("TextButton",{Name=props.revealName,Text="Show",Font=F.medium,TextSize=12,TextColor3=C.sub,
+                    AutoButtonColor=false,Size=UDim2.fromOffset(48,24),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-4,0.5,0),
+                    BackgroundColor3=C.control,BackgroundTransparency=1,BorderSizePixel=0,ZIndex=3},frame)
+                corner(reveal,3)
+                reveal.MouseEnter:Connect(function() tween(reveal,0.1,{BackgroundTransparency=0}) end)
+                reveal.MouseLeave:Connect(function() tween(reveal,0.1,{BackgroundTransparency=1}) end)
+                maskable(box,overlay,reveal)
+            end
+            return box,frame
+        end
+        -- Fluent ToggleSwitch with its On/Off label. A frame, so the owning card receives the click.
+        S.switch=function(row,value,onChange)
+            local holder=new("Frame",{Name="Switch",Size=UDim2.fromOffset(84,20),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-16,0.5,0),
+                BackgroundTransparency=1},row)
+            local state=caption(holder,{name="State",size=14,color=C.text,box=UDim2.fromOffset(34,20)})
+            local track=new("Frame",{Size=UDim2.fromOffset(40,20),AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),
+                BackgroundColor3=C.accent,BackgroundTransparency=1,BorderSizePixel=0},holder)
+            corner(track,10)
+            local edge=stroke(track,C.sub,0.2)
+            local knob=new("Frame",{Size=UDim2.fromOffset(12,12),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0,10,0.5,0),
+                BackgroundColor3=C.sub,BorderSizePixel=0},track)
+            corner(knob,6)
+            local function set(on,silent)
+                value=on
+                state.Text=on and "On" or "Off"
+                tween(track,0.12,{BackgroundTransparency=on and 0 or 1}); edge.Transparency=on and 1 or 0.2
+                knob.BackgroundColor3=on and C.onAccent or C.sub
+                tween(knob,0.18,{Position=UDim2.new(0,on and 30 or 10,0.5,0)})
+                if not silent then onChange(on) end
+            end
+            set(value,true)
+            if row:IsA("GuiButton") then
+                row.MouseButton1Down:Connect(function() tween(knob,0.1,{Size=UDim2.fromOffset(14,12)}) end)
+                row.MouseButton1Up:Connect(function() tween(knob,0.1,{Size=UDim2.fromOffset(12,12)}) end)
+            end
+            return set,function() set(not value) end
+        end
+        -- ComboBox with a flyout; the owning card and group are lifted above later siblings while open.
+        local openFlyout
+        S.popup=function(row,props)
+            local holder=new("Frame",{Name=props.name.."Holder",Size=UDim2.new(props.widthScale or 0.5,0,0,32),AnchorPoint=Vector2.new(1,0.5),
+                Position=UDim2.new(1,-16,0.5,0),BackgroundTransparency=1},row)
+            local value=props.value
+            local b=button(holder,{name=props.name,text="",size=UDim2.fromScale(1,1)})
+            local shown=caption(b,{size=14,color=C.text,box=UDim2.new(1,-40,1,0),position=UDim2.fromOffset(11,0)})
+            chevron(b,UDim2.new(1,-18,0.5,0),C.sub,"down")
+            local flyout=new("ScrollingFrame",{Name=props.name.."Flyout",Size=UDim2.new(1,0,0,40),BackgroundColor3=C.flyout,BorderSizePixel=0,
+                Visible=false,ScrollBarThickness=3,ScrollBarImageColor3=C.dim,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=20},holder)
+            corner(flyout,8); stroke(flyout,C.controlEdge)
+            new("UIListLayout",{Padding=UDim.new(0,2),SortOrder=Enum.SortOrder.LayoutOrder},flyout)
+            pad(flyout,4,4,4,4)
+            local options={}
+            local function display(option) return option and (props.display and props.display(option) or option) or (props.placeholder or "Choose") end
+            local function paint()
+                shown.Text=display(value)
+                for _,item in ipairs(flyout:GetChildren()) do
+                    if item:IsA("TextButton") then
+                        local active=item:GetAttribute("Value")==value
+                        item.BackgroundTransparency=active and 0.94 or 1
+                        item:FindFirstChild("Pill").Visible=active
+                    end
+                end
+            end
+            local function close()
+                flyout.Visible=false
+                for _,frame in ipairs(props.lift or {}) do frame.ZIndex=1 end
+                if openFlyout==close then openFlyout=nil end
+            end
+            local handle={button=b}
+            function handle.Refresh(values)
+                for _,item in ipairs(flyout:GetChildren()) do if item:IsA("TextButton") then item:Destroy() end end
+                options=values
+                if value~=nil and not table.find(values,value) then value=nil end
+                for i,option in ipairs(values) do
+                    local item=new("TextButton",{Name=props.optionName and props.optionName(option) or "Option_"..option,Text="",AutoButtonColor=false,
+                        Size=UDim2.new(1,0,0,32),BackgroundColor3=WHITE,BackgroundTransparency=1,BorderSizePixel=0,LayoutOrder=i,ZIndex=21},flyout)
+                    item:SetAttribute("Value",option)
+                    corner(item,4)
+                    caption(item,{text=display(option),size=14,color=C.text,box=UDim2.new(1,-24,1,0),position=UDim2.fromOffset(14,0),z=22})
+                    local pill=new("Frame",{Name="Pill",Size=UDim2.fromOffset(3,16),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,0,0.5,0),
+                        BackgroundColor3=C.accent,BorderSizePixel=0,Visible=false,ZIndex=22},item)
+                    corner(pill,2)
+                    item.MouseEnter:Connect(function() if option~=value then item.BackgroundTransparency=0.96 end end)
+                    item.MouseLeave:Connect(function() if option~=value then item.BackgroundTransparency=1 end end)
+                    item.Activated:Connect(function() value=option; paint(); close(); props.onChange(option) end)
+                end
+                flyout.Size=UDim2.new(1,0,0,math.min(#values*34+8,214))
+                paint()
+            end
+            function handle.Set(option) value=option; paint(); close() end
+            b.Activated:Connect(function()
+                if flyout.Visible then close(); return end
+                if openFlyout then openFlyout() end
+                if #options==0 then return end
+                placeFlyout(flyout,holder,S.pageArea,flyout.Size.Y.Offset)
+                flyout.Visible=true
+                for _,frame in ipairs(props.lift or {}) do frame.ZIndex=10 end
+                openFlyout=close
+            end)
+            handle.Refresh(props.options or {})
+            return handle
+        end
+        S.closeMenus=function() if openFlyout then openFlyout() end end
+        -- SelectorBar: a short accent pill under the active filter.
+        S.filterBar=function(parent,options,value,y,onChange)
+            local bar=new("Frame",{Name="ProviderFilters",Size=UDim2.new(1,-180,0,36),Position=UDim2.fromOffset(0,y),BackgroundTransparency=1},parent)
+            new("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},bar)
+            local items={}
+            local function paint()
+                for option,item in pairs(items) do
+                    local active=option==value
+                    item.button.TextColor3=active and C.text or C.sub
+                    item.button.Font=active and F.medium or F.body
+                    tween(item.pill,0.2,{Size=active and UDim2.fromOffset(16,3) or UDim2.fromOffset(0,3)})
+                end
+            end
+            for i,option in ipairs(options) do
+                local b=new("TextButton",{Name="ProviderFilter_"..option,Text=option,Font=F.body,TextSize=14,TextColor3=C.sub,AutoButtonColor=false,
+                    AutomaticSize=Enum.AutomaticSize.X,Size=UDim2.fromOffset(0,36),BackgroundColor3=WHITE,BackgroundTransparency=1,
+                    BorderSizePixel=0,LayoutOrder=i},bar)
+                corner(b,4); pad(b,0,12,0,12)
+                local pill=new("Frame",{Size=UDim2.fromOffset(0,3),AnchorPoint=Vector2.new(0.5,1),Position=UDim2.new(0.5,0,1,-1),
+                    BackgroundColor3=C.accent,BorderSizePixel=0},b)
+                corner(pill,2)
+                b.MouseEnter:Connect(function() tween(b,0.1,{BackgroundTransparency=0.96}) end)
+                b.MouseLeave:Connect(function() tween(b,0.1,{BackgroundTransparency=1}) end)
+                b.Activated:Connect(function() value=option; paint(); onChange(option) end)
+                items[option]={button=b,pill=pill}
+            end
+            paint()
+            return function(option) value=option; paint() end,y+44
+        end
+        S.info=function(parent,props)
+            local tones={info={C.info,C.accent,"i"},success={C.success,C.successIcon,"✓"},warning={C.warning,C.warningIcon,"!"}}
+            local tone=tones[props.severity or "info"]
+            local bar=new("Frame",{Name=props.name or "InfoBar",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+                BackgroundColor3=tone[1],BorderSizePixel=0,LayoutOrder=props.order or 0},parent)
+            corner(bar,6); stroke(bar,C.cardEdge,0.5)
+            pad(bar,14,props.action and 150 or 16,14,48)
+            local icon=new("Frame",{Size=UDim2.fromOffset(16,16),Position=UDim2.fromOffset(-32,2),BackgroundColor3=tone[2],BorderSizePixel=0},bar)
+            corner(icon,8)
+            text(icon,{Size=UDim2.fromScale(1,1),Text=tone[3],Font=F.bold,TextSize=10,TextXAlignment=Enum.TextXAlignment.Center},C.onAccent)
+            local stack=new("Frame",{Size=UDim2.fromScale(1,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1},bar)
+            new("UIListLayout",{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},stack)
+            if props.title then caption(stack,{text=props.title,font=F.bold,size=14,color=C.text,box=UDim2.new(1,0,0,20)}).LayoutOrder=1 end
+            local message=caption(stack,{name="Message",text=props.message or "",size=13,color=C.sub,box=UDim2.new(1,0,0,0)})
+            message.AutomaticSize=Enum.AutomaticSize.Y; message.TextWrapped=true; message.TextTruncate=Enum.TextTruncate.None; message.LayoutOrder=2
+            local action
+            if props.action then
+                action=button(bar,{name=props.action.name,text=props.action.text,size=UDim2.fromOffset(120,32),anchor=Vector2.new(1,0.5),
+                    position=UDim2.new(1,134,0.5,0)})
+                action.Activated:Connect(props.action.callback)
+            end
+            return bar,message,action
+        end
+        -- Personality presets as a GridView of selectable tiles.
+        S.presetPicker=function(G,presets,onPick)
+            local grid=new("Frame",{Name="PersonalityPresets",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,
+                LayoutOrder=1},G.frame)
+            local layout=new("UIGridLayout",{CellSize=UDim2.new(0.25,-6,0,76),CellPadding=UDim2.fromOffset(8,8),SortOrder=Enum.SortOrder.LayoutOrder},grid)
+            local tiles={}
+            for i,preset in ipairs(presets) do
+                local tile=new("TextButton",{Name="Personality_"..preset.name,Text="",AutoButtonColor=false,BackgroundColor3=C.card,
+                    BorderSizePixel=0,LayoutOrder=i},grid)
+                corner(tile,6)
+                local edge=stroke(tile,C.cardEdge,0.3)
+                text(tile,{Text=preset.emoji,TextSize=22,Size=UDim2.fromOffset(30,30),Position=UDim2.fromOffset(12,10),
+                    TextXAlignment=Enum.TextXAlignment.Center,TextTruncate=Enum.TextTruncate.None})
+                caption(tile,{text=preset.name,size=14,color=C.text,box=UDim2.new(1,-24,0,20),position=UDim2.fromOffset(12,44)})
+                local check=new("Frame",{Size=UDim2.fromOffset(18,18),AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-8,0,8),
+                    BackgroundColor3=C.accent,BorderSizePixel=0,Visible=false},tile)
+                corner(check,3)
+                text(check,{Size=UDim2.fromScale(1,1),Text="✓",Font=F.bold,TextSize=11,TextXAlignment=Enum.TextXAlignment.Center},C.onAccent)
+                tile.MouseEnter:Connect(function() tween(tile,0.1,{BackgroundColor3=C.cardHover}) end)
+                tile.MouseLeave:Connect(function() tween(tile,0.1,{BackgroundColor3=C.card}) end)
+                tile.Activated:Connect(function() onPick(preset) end)
+                tiles[preset.name]={edge=edge,check=check}
+            end
+            local picker={}
+            function picker.paint(name)
+                for key,tile in pairs(tiles) do
+                    local selected=key==name
+                    tile.edge.Color=selected and C.accent or C.cardEdge
+                    tile.edge.Thickness=selected and 2 or 1
+                    tile.edge.Transparency=selected and 0 or 0.3
+                    tile.check.Visible=selected
+                end
+            end
+            function picker.fit(compact) layout.CellSize=UDim2.new(compact and 0.5 or 0.25,-6,0,76) end
+            return picker
+        end
+        S.providerToolbar=function(page)
+            local search=S.field(page,{name="ProviderSearch",placeholder="Search providers or model IDs",clear=true})
+            local frame=search.Parent
+            frame.AnchorPoint=Vector2.new(); frame.Position=UDim2.new(); frame.Size=UDim2.new(0.55,0,0,32)
+            searchGlyph(new("Frame",{Size=UDim2.fromOffset(32,32),AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),
+                BackgroundTransparency=1,ZIndex=3},frame),16,C.sub)
+            local clear=new("TextButton",{Name="ClearProviderSearch",Text="✕",Font=F.body,TextSize=11,TextColor3=C.sub,AutoButtonColor=false,
+                Size=UDim2.fromOffset(24,24),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-30,0.5,0),BackgroundColor3=WHITE,
+                BackgroundTransparency=1,BorderSizePixel=0,ZIndex=4,Visible=false},frame)
+            corner(clear,3)
+            clear.MouseEnter:Connect(function() tween(clear,0.1,{BackgroundTransparency=0.94}) end)
+            clear.MouseLeave:Connect(function() tween(clear,0.1,{BackgroundTransparency=1}) end)
+            local count=caption(page,{name="ProviderResultCount",box=UDim2.new(0.45,-12,0,32),anchor=Vector2.new(1,0),
+                position=UDim2.fromScale(1,0),align=Enum.TextXAlignment.Right})
+            return search,clear,count,40
+        end
+        S.showSearch=function() end
+        S.emptyState=function(parent,props)
+            local holder=new("Frame",{Name=props.name,Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Visible=false},parent)
+            local _,message,action=S.info(holder,{severity="info",title=props.title,message=props.message,
+                action={name=props.buttonName,text=props.buttonText,callback=function() end}})
+            return holder,message,action
+        end
+        return S
+    end
+
+    -- ───────────────────────── macOS (Liquid Glass) ─────────────────────────
+    local function MacOS(ctx)
+        local C={
+            window=Color3.fromRGB(30,30,32), label=Color3.fromRGB(236,236,240), secondary=Color3.fromRGB(152,152,160),
+            tertiary=Color3.fromRGB(102,102,108), accent=Color3.fromRGB(10,132,255), accentHover=Color3.fromRGB(46,152,255),
+            menu=Color3.fromRGB(44,44,48), field=Color3.fromRGB(40,40,43), red=Color3.fromRGB(255,95,87),
+            yellow=Color3.fromRGB(254,188,46), green=Color3.fromRGB(40,200,64), error=Color3.fromRGB(255,105,97),
+            success=Color3.fromRGB(48,209,88), warning=Color3.fromRGB(255,214,10),
+        }
+        local S={colors={secondary=C.secondary,error=C.error,accent=C.accent},nextLabel="Continue",maxW=960,maxH=660}
+        local INSET,RADIUS=8,26
+        local sidebarWidth=228
+        local function label(parent,props)
+            return text(parent,{Name=props.name,Text=props.text or "",Font=props.font or F.body,TextSize=props.size or 13,
+                TextColor3=props.color or C.label,Size=props.box or UDim2.new(1,0,1,0),Position=props.position or UDim2.new(),
+                AnchorPoint=props.anchor or Vector2.new(),TextXAlignment=props.align or Enum.TextXAlignment.Left,ZIndex=props.z or 1})
+        end
+        -- Liquid Glass: a translucent fill, an even hairline rim and a faint top highlight.
+        local function glass(parent,props)
+            local frame=new(props.class or "Frame",{Name=props.name,Size=props.size,Position=props.position or UDim2.new(),
+                AnchorPoint=props.anchor or Vector2.new(),BackgroundColor3=props.tint or WHITE,BackgroundTransparency=props.transparency or 0.92,
+                BorderSizePixel=0,LayoutOrder=props.order or 0,ZIndex=props.z or 1},parent)
+            if props.class=="TextButton" then frame.AutoButtonColor=false end
+            corner(frame,props.radius or 12)
+            local rim=stroke(frame,WHITE,props.rim or 0.86)
+            gradient(rim,{WHITE,WHITE},90,fade({{0,0},{0.5,0.6},{1,0.35}}))
+            return frame,rim
+        end
+        local function capsule(parent,props)
+            local primary=props.primary
+            local b=glass(parent,{class="TextButton",name=props.name,size=props.size,position=props.position,anchor=props.anchor,
+                radius=math.floor(props.size.Y.Offset/2),tint=primary and C.accent or WHITE,transparency=primary and 0 or 0.87,rim=primary and 0.7 or 0.86})
+            b.Text=props.text or ""; b.Font=F.medium; b.TextSize=props.textSize or 13; b.TextColor3=primary and WHITE or C.label
+            b.TextTruncate=Enum.TextTruncate.AtEnd
+            if primary then gradient(b,{WHITE,Color3.fromRGB(215,225,255)},90) end
+            local grow=new("UIScale",{},b)
+            b.MouseEnter:Connect(function() tween(b,0.15,{BackgroundTransparency=primary and 0 or 0.8}) end)
+            b.MouseLeave:Connect(function() tween(b,0.15,{BackgroundTransparency=primary and 0 or 0.87}); tween(grow,0.25,{Scale=1}) end)
+            -- Liquid press: the capsule swells a touch under the pointer and springs back.
+            b.MouseButton1Down:Connect(function() tween(grow,0.15,{Scale=1.04},Enum.EasingStyle.Back) end)
+            b.MouseButton1Up:Connect(function() tween(grow,0.4,{Scale=1},Enum.EasingStyle.Elastic) end)
+            return b
+        end
+        S.button=function(parent,props)
+            return capsule(parent,{name=props.name,text=props.text,primary=props.primary,size=props.size or UDim2.fromOffset(120,28),
+                position=props.position,anchor=props.anchor,textSize=12})
+        end
+
+        -- Shell.
+        local blur
+        do
+            local ok,lighting=pcall(function() return game:GetService("Lighting") end)
+            if ok and lighting then
+                local old=lighting:FindFirstChild("AIBotSetupBlur")
+                if old then old:Destroy() end
+                blur=Instance.new("BlurEffect"); blur.Name="AIBotSetupBlur"; blur.Size=0; blur.Parent=lighting
+                tween(blur,0.5,{Size=14})
+                ctx.gui.Destroying:Connect(function() blur:Destroy() end)
+            end
+        end
+        S.blur=blur
+        local root=new("Frame",{Name="SetupWindow",Size=UDim2.fromOffset(920,620),AnchorPoint=Vector2.new(0.5,0.5),
+            Position=UDim2.fromScale(0.5,0.5),BackgroundTransparency=1},ctx.gui)
+        S.root=root; S.scale=new("UIScale",{},root)
+        softShadow(root,RADIUS,0.5)
+        local window=new("Frame",{Name="Window",Size=UDim2.fromScale(1,1),BackgroundColor3=C.window,BackgroundTransparency=0.04,
+            BorderSizePixel=0,ClipsDescendants=true},root)
+        corner(window,RADIUS); stroke(window,WHITE,0.84)
+        local sidebar=glass(window,{name="Sidebar",size=UDim2.new(0,sidebarWidth,1,-INSET*2),position=UDim2.fromOffset(INSET,INSET),
+            radius=RADIUS-INSET,transparency=0.93})
+        local lights={}
+        for i,spec in ipairs({{"CloseSetup",C.red,"×"},{"Minimize",C.yellow,"−"},{"Zoom",Color3.fromRGB(88,88,94),""}}) do
+            local light=new("TextButton",{Name=spec[1],Text="",AutoButtonColor=false,Size=UDim2.fromOffset(12,12),
+                Position=UDim2.fromOffset(14+(i-1)*20,16),BackgroundColor3=spec[2],BorderSizePixel=0,ZIndex=3},sidebar)
+            corner(light,6); stroke(light,BLACK,0.8)
+            local glyph=label(light,{text="",font=F.bold,size=10,color=Color3.fromRGB(80,20,15),align=Enum.TextXAlignment.Center,z=4})
+            lights[i]={light=light,glyph=glyph,symbol=spec[3]}
+        end
+        S.closeButton=lights[1].light
+        local lightsHover=new("Frame",{Size=UDim2.fromOffset(72,28),Position=UDim2.fromOffset(8,8),BackgroundTransparency=1,ZIndex=2},sidebar)
+        lightsHover.MouseEnter:Connect(function() for _,entry in ipairs(lights) do entry.glyph.Text=entry.symbol end end)
+        lightsHover.MouseLeave:Connect(function() for _,entry in ipairs(lights) do entry.glyph.Text="" end end)
+        local sidebarTitle=label(sidebar,{text="BloxyAI Setup",font=F.bold,size=13,box=UDim2.new(1,-28,0,18),position=UDim2.fromOffset(14,46)})
+        local sidebarSub=label(sidebar,{text="v"..VERSION.." · macOS style",size=11,color=C.secondary,box=UDim2.new(1,-28,0,14),position=UDim2.fromOffset(14,64)})
+        local ICONS={{Color3.fromRGB(10,132,255),"◎"},{Color3.fromRGB(48,209,88),"⇄"},{Color3.fromRGB(191,90,242),"◇"},
+            {Color3.fromRGB(255,159,10),"☺"},{Color3.fromRGB(255,55,95),"♪"}}
+        local selection=new("Frame",{Name="SidebarSelection",Size=UDim2.new(1,-16,0,30),Position=UDim2.fromOffset(8,92),
+            BackgroundColor3=C.accent,BorderSizePixel=0,ZIndex=2},sidebar)
+        corner(selection,8)
+        local items={}
+        for i,name in ipairs(ctx.steps) do
+            local item=new("TextButton",{Name="SetupNav_"..i,Text="",AutoButtonColor=false,Size=UDim2.new(1,-16,0,30),
+                Position=UDim2.fromOffset(8,92+(i-1)*34),BackgroundColor3=WHITE,BackgroundTransparency=1,BorderSizePixel=0,ZIndex=3},sidebar)
+            corner(item,8)
+            local icon=new("Frame",{Size=UDim2.fromOffset(20,20),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,6,0.5,0),
+                BackgroundColor3=ICONS[i][1],BorderSizePixel=0,ZIndex=3},item)
+            corner(icon,5); gradient(icon,{WHITE,Color3.fromRGB(200,200,210)},90)
+            text(icon,{Size=UDim2.fromScale(1,1),Text=ICONS[i][2],Font=F.bold,TextSize=11,TextXAlignment=Enum.TextXAlignment.Center,ZIndex=4,
+                TextTruncate=Enum.TextTruncate.None})
+            local caption=label(item,{name="Label",text=name,size=13,box=UDim2.new(1,-40,1,0),position=UDim2.fromOffset(34,0),z=3})
+            items[i]={item=item,caption=caption,icon=icon}
+            item.MouseEnter:Connect(function() if not items[i].active then tween(item,0.1,{BackgroundTransparency=0.94}) end end)
+            item.MouseLeave:Connect(function() tween(item,0.1,{BackgroundTransparency=1}) end)
+            item.Activated:Connect(function() ctx.onNav(i) end)
+        end
+        S.setNav=function(step,furthest)
+            for i,entry in ipairs(items) do
+                entry.active=i==step
+                entry.caption.TextColor3=i==step and WHITE or i<=furthest and C.label or C.tertiary
+                entry.icon.BackgroundTransparency=i<=furthest and 0 or 0.5
+            end
+            tween(selection,0.35,{Position=UDim2.fromOffset(8,92+(step-1)*34)},Enum.EasingStyle.Back)
+        end
+
+        -- Toolbar floats over the content: back/forward capsule, title, search capsule.
+        local content=new("Frame",{Name="Content",Size=UDim2.new(1,-(sidebarWidth+INSET*2+16),1,-INSET*2),
+            Position=UDim2.fromOffset(sidebarWidth+INSET+16,INSET),BackgroundTransparency=1},window)
+        local toolbar=new("Frame",{Name="Toolbar",Size=UDim2.new(1,-8,0,34),Position=UDim2.fromOffset(0,6),BackgroundTransparency=1},content)
+        local nav=glass(toolbar,{name="NavCapsule",size=UDim2.fromOffset(68,30),radius=15,transparency=0.9})
+        local navBack=new("TextButton",{Name="NavBack",Text="",AutoButtonColor=false,Size=UDim2.new(0.5,0,1,0),BackgroundTransparency=1,ZIndex=3},nav)
+        chevron(navBack,UDim2.fromScale(0.55,0.5),C.label,"left")
+        local navForward=new("TextButton",{Name="NavForward",Text="",AutoButtonColor=false,Size=UDim2.new(0.5,0,1,0),Position=UDim2.fromScale(0.5,0),
+            BackgroundTransparency=1,ZIndex=3},nav)
+        chevron(navForward,UDim2.fromScale(0.45,0.5),C.label,"right")
+        navBack.Activated:Connect(function() ctx.onBack() end)
+        navForward.Activated:Connect(function() ctx.onForward() end)
+        local heading=label(toolbar,{name="SetupHeading",font=F.bold,size=15,box=UDim2.new(1,-330,1,0),position=UDim2.fromOffset(80,0)})
+        local searchCapsule=glass(toolbar,{name="SearchCapsule",size=UDim2.fromOffset(230,30),anchor=Vector2.new(1,0),position=UDim2.fromScale(1,0),
+            radius=15,transparency=0.9})
+        local subtitle=label(content,{name="SetupSubtitle",size=12,color=C.secondary,box=UDim2.new(1,-8,0,16),position=UDim2.fromOffset(4,48)})
+        S.setHeader=function(title,sub) heading.Text=title; subtitle.Text=sub end
+        S.pageArea=new("Frame",{Name="SetupPages",Size=UDim2.new(1,-8,1,-(74+52)),Position=UDim2.fromOffset(0,74),BackgroundTransparency=1,
+            ClipsDescendants=true},content)
+        local footer=new("Frame",{Name="SetupFooter",Size=UDim2.new(1,-8,0,40),AnchorPoint=Vector2.new(0,1),Position=UDim2.new(0,0,1,-6),
+            BackgroundTransparency=1},content)
+        S.errorLabel=label(footer,{name="SetupError",size=12,color=C.error,box=UDim2.new(1,-330,1,0),position=UDim2.fromOffset(4,0)})
+        S.errorLabel.TextWrapped=true; S.errorLabel.TextTruncate=Enum.TextTruncate.None
+        S.continueButton=capsule(footer,{name="SetupContinue",text="Continue",primary=true,size=UDim2.fromOffset(170,30),
+            anchor=Vector2.new(1,0.5),position=UDim2.new(1,0,0.5,0)})
+        S.backButton=capsule(footer,{name="SetupBack",text="Go Back",size=UDim2.fromOffset(100,30),anchor=Vector2.new(1,0.5),position=UDim2.new(1,-180,0.5,0)})
+        S.setError=function(message)
+            S.errorLabel.Text=message
+            if message~="" then
+                -- The macOS "no" shake.
+                S.errorLabel.Position=UDim2.fromOffset(14,0)
+                tween(S.errorLabel,0.5,{Position=UDim2.fromOffset(4,0)},Enum.EasingStyle.Elastic)
+            end
+        end
+        S.showSearch=function(visible) searchCapsule.Visible=visible end
+        local toast=glass(window,{name="Toast",size=UDim2.fromOffset(330,62),anchor=Vector2.new(1,0),position=UDim2.new(1,350,0,INSET+10),
+            radius=18,tint=C.menu,transparency=0.04,z=40})
+        local toastIcon=new("Frame",{Size=UDim2.fromOffset(32,32),Position=UDim2.fromOffset(14,15),BackgroundColor3=WHITE,BorderSizePixel=0,ZIndex=41},toast)
+        corner(toastIcon,8); gradient(toastIcon,{C.accent,Color3.fromRGB(94,92,230)},135)
+        label(toast,{text="BloxyAI Setup",font=F.bold,size=12,box=UDim2.new(1,-70,0,16),position=UDim2.fromOffset(56,13),z=41})
+        local toastText=label(toast,{size=12,color=C.secondary,box=UDim2.new(1,-70,0,16),position=UDim2.fromOffset(56,31),z=41})
+        local toastToken=0
+        S.toast=function(message)
+            toastToken=toastToken+1
+            local token=toastToken
+            toastText.Text=message
+            tween(toast,0.45,{Position=UDim2.new(1,-INSET-8,0,INSET+10)},Enum.EasingStyle.Back)
+            task.delay(3,function() if token==toastToken and ctx.gui.Parent then tween(toast,0.3,{Position=UDim2.new(1,350,0,INSET+10)}) end end)
+        end
+        S.enter=function(page)
+            page.Position=UDim2.fromOffset(0,10)
+            tween(page,0.35,{Position=UDim2.new()})
+        end
+        S.drag=toolbar
+        -- Minimize shrinks the window into a dock-style pill that restores it.
+        local dock=glass(ctx.gui,{class="TextButton",name="RestoreSetup",size=UDim2.fromOffset(200,46),anchor=Vector2.new(0.5,1),
+            position=UDim2.new(0.5,0,1,80),radius=23,tint=C.menu,transparency=0.1})
+        dock.Text=""; dock.Visible=false
+        local dockIcon=new("Frame",{Size=UDim2.fromOffset(30,30),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,8,0.5,0),
+            BackgroundColor3=WHITE,BorderSizePixel=0,ZIndex=2},dock)
+        corner(dockIcon,8); gradient(dockIcon,{C.accent,Color3.fromRGB(94,92,230)},135)
+        label(dock,{text="BloxyAI Setup",font=F.medium,size=13,box=UDim2.new(1,-54,1,0),position=UDim2.fromOffset(48,0),z=2})
+        local restPosition,restScale=root.Position,1
+        lights[2].light.Activated:Connect(function()
+            restPosition,restScale=root.Position,S.scale.Scale
+            tween(S.scale,0.35,{Scale=restScale*0.15},Enum.EasingStyle.Quint,Enum.EasingDirection.In)
+            tween(root,0.35,{Position=UDim2.new(0.5,0,1,-30)},Enum.EasingStyle.Quint,Enum.EasingDirection.In)
+            if blur then tween(blur,0.35,{Size=0}) end
+            task.delay(0.36,function()
+                if not ctx.gui.Parent then return end
+                root.Visible=false; dock.Visible=true
+                tween(dock,0.4,{Position=UDim2.new(0.5,0,1,-18)},Enum.EasingStyle.Back)
+            end)
+        end)
+        dock.Activated:Connect(function()
+            tween(dock,0.25,{Position=UDim2.new(0.5,0,1,80)})
+            task.delay(0.1,function() dock.Visible=false end)
+            root.Visible=true
+            tween(S.scale,0.45,{Scale=restScale},Enum.EasingStyle.Back)
+            tween(root,0.45,{Position=restPosition},Enum.EasingStyle.Back)
+            if blur then tween(blur,0.4,{Size=14}) end
+        end)
+        S.isMinimized=function() return not root.Visible end
+        S.fit=function(width,height,compact)
+            root.Size=UDim2.fromOffset(width,height)
+            sidebarWidth=compact and 52 or 228
+            sidebar.Size=UDim2.new(0,sidebarWidth,1,-INSET*2)
+            content.Size=UDim2.new(1,-(sidebarWidth+INSET*2+16),1,-INSET*2); content.Position=UDim2.fromOffset(sidebarWidth+INSET+16,INSET)
+            for _,entry in ipairs(items) do entry.caption.Visible=not compact end
+            sidebarTitle.Visible=not compact; sidebarSub.Visible=not compact
+            searchCapsule.Size=UDim2.fromOffset(compact and 150 or 230,30)
+            heading.Size=UDim2.new(1,compact and -250 or -330,1,0)
+            S.errorLabel.Size=UDim2.new(1,compact and -290 or -330,1,0)
+        end
+
+        -- Controls.
+        S.scrollPage=function(parent,name) return scrollList(parent,name,18,2) end
+        S.group=function(parent,props)
+            local holder=new("Frame",{Name=props.name or "Group",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
+                BackgroundTransparency=1,LayoutOrder=props.order or 0},parent)
+            new("UIListLayout",{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder},holder)
+            if props.title then
+                local header=label(holder,{text=props.title,font=F.bold,size=13,box=UDim2.new(1,0,0,16)})
+                header.LayoutOrder=1; pad(header,0,10,0,10)
+            end
+            local box=new("Frame",{Name="Box",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=WHITE,
+                BackgroundTransparency=0.95,BorderSizePixel=0,LayoutOrder=2},holder)
+            corner(box,12); stroke(box,WHITE,0.92)
+            new("UIListLayout",{SortOrder=Enum.SortOrder.LayoutOrder},box)
+            local G={frame=holder,box=box,rows={}}
+            local footnote
+            G.setFootnote=function(message)
+                if not footnote then
+                    footnote=label(holder,{name="Footnote",size=11,color=C.secondary,box=UDim2.new(1,0,0,0)})
+                    footnote.AutomaticSize=Enum.AutomaticSize.Y; footnote.TextWrapped=true; footnote.TextTruncate=Enum.TextTruncate.None
+                    footnote.LayoutOrder=3; pad(footnote,0,10,0,10)
+                end
+                footnote.Text=message
+            end
+            if props.footnote then G.setFootnote(props.footnote) end
+            local count=0
+            G.row=function(rowProps)
+                count=count+1
+                local height=rowProps.height or (rowProps.wrap and 66 or rowProps.subtitle and 50 or 40)
+                local row=new(rowProps.clickable and "TextButton" or "Frame",{Name=rowProps.name or "Row",Size=UDim2.new(1,0,0,height),
+                    AutomaticSize=rowProps.auto and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundColor3=WHITE,
+                    BackgroundTransparency=1,BorderSizePixel=0,LayoutOrder=count},box)
+                if rowProps.clickable then
+                    row.Text=""; row.AutoButtonColor=false
+                    corner(row,10)
+                    row.MouseEnter:Connect(function() tween(row,0.1,{BackgroundTransparency=0.95}) end)
+                    row.MouseLeave:Connect(function() tween(row,0.1,{BackgroundTransparency=1}) end)
+                end
+                local x=12
+                if rowProps.icon then
+                    local icon=new("Frame",{Size=UDim2.fromOffset(24,24),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,12,0,height/2),
+                        BackgroundColor3=rowProps.iconColor or C.accent,BorderSizePixel=0},row)
+                    corner(icon,6); gradient(icon,{WHITE,Color3.fromRGB(200,200,210)},90)
+                    text(icon,{Size=UDim2.fromScale(1,1),Text=rowProps.icon,Font=F.bold,TextSize=9,TextXAlignment=Enum.TextXAlignment.Center,
+                        TextStrokeTransparency=0.85})
+                    x=46
+                end
+                if count>1 then
+                    new("Frame",{Name="Hairline",Size=UDim2.new(1,-x,0,1),Position=UDim2.fromOffset(x,0),BackgroundColor3=WHITE,
+                        BackgroundTransparency=0.92,BorderSizePixel=0},row)
+                end
+                local right=rowProps.right or 0
+                local title,sub,body
+                if rowProps.auto then
+                    pad(row,10,12,10,x)
+                    local stack=new("Frame",{Size=UDim2.fromScale(1,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1},row)
+                    new("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},stack)
+                    title=label(stack,{name="Title",text=rowProps.title,font=F.medium,box=UDim2.new(1,0,0,18)})
+                    title.LayoutOrder=1
+                    body=label(stack,{name="Body",text=rowProps.body or "",size=12,color=C.secondary,box=UDim2.new(1,0,0,0)})
+                    body.AutomaticSize=Enum.AutomaticSize.Y; body.TextWrapped=true; body.TextTruncate=Enum.TextTruncate.None; body.LayoutOrder=2
+                else
+                    title=label(row,{name="Title",text=rowProps.title,box=UDim2.new(1,-(x+right+12),0,rowProps.subtitle and 18 or height),
+                        position=UDim2.fromOffset(x,rowProps.subtitle and 8 or 0)})
+                    if rowProps.subtitle then
+                        sub=label(row,{name=rowProps.subtitleName or "Subtitle",text=rowProps.subtitle,size=11,color=C.secondary,
+                            font=rowProps.monoSubtitle and F.mono or F.body,box=UDim2.new(1,-(x+right+12),0,rowProps.wrap and 30 or 14),position=UDim2.fromOffset(x,27)})
+                        if rowProps.wrap then sub.TextWrapped=true; sub.TextTruncate=Enum.TextTruncate.None; sub.TextYAlignment=Enum.TextYAlignment.Top end
+                    end
+                    if rowProps.action then chevron(row,UDim2.new(1,-20,0.5,0),C.secondary,"right") end
+                end
+                table.insert(G.rows,row)
+                return row,title,sub,body
+            end
+            G.clear=function()
+                for _,row in ipairs(G.rows) do row:Destroy() end
+                G.rows={}; count=0
+            end
+            return G
+        end
+        -- macOS radio button.
+        S.mark=function(row)
+            local ring=new("Frame",{Name="SelectedMark",Size=UDim2.fromOffset(16,16),AnchorPoint=Vector2.new(0.5,0.5),
+                Position=UDim2.new(1,-22,0.5,0),BackgroundColor3=WHITE,BackgroundTransparency=0.9,BorderSizePixel=0},row)
+            corner(ring,8)
+            local edge=stroke(ring,WHITE,0.72)
+            local dot=new("Frame",{Size=UDim2.fromOffset(6,6),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),
+                BackgroundColor3=WHITE,BorderSizePixel=0,Visible=false},ring)
+            corner(dot,3)
+            return function(on)
+                ring.BackgroundColor3=on and C.accent or WHITE
+                ring.BackgroundTransparency=on and 0 or 0.9
+                edge.Transparency=on and 0.6 or 0.72
+                dot.Visible=on
+                ring:SetAttribute("Selected",on)
+            end
+        end
+        S.field=function(row,props)
+            local frame=new("Frame",{Name=props.name.."Box",BackgroundColor3=C.field,BorderSizePixel=0},row)
+            if props.multiline then
+                frame.Size=UDim2.new(1,-24,1,-20); frame.Position=UDim2.fromOffset(12,10)
+            else
+                frame.Size=UDim2.new(props.widthScale or 0.5,0,0,26); frame.AnchorPoint=Vector2.new(1,0.5); frame.Position=UDim2.new(1,-(props.inset or 12),0.5,0)
+            end
+            corner(frame,props.multiline and 8 or 7)
+            local ring=stroke(frame,WHITE,0.86)
+            local right=props.secret and 50 or props.clear and 26 or 0
+            local box=new("TextBox",{Name=props.name,Text=props.value or "",PlaceholderText=props.placeholder or "",PlaceholderColor3=C.tertiary,
+                TextColor3=C.label,Font=props.mono and F.mono or F.body,TextSize=13,ClearTextOnFocus=false,BackgroundTransparency=1,
+                MultiLine=props.multiline==true,TextWrapped=props.multiline==true,TextXAlignment=Enum.TextXAlignment.Left,
+                TextYAlignment=props.multiline and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center,
+                Size=UDim2.new(1,-(16+right),1,props.multiline and -14 or 0),Position=UDim2.fromOffset(8,props.multiline and 7 or 0)},frame)
+            -- Focus ring: a soft accent halo.
+            box.Focused:Connect(function() ring.Color=C.accent; ring.Thickness=3; tween(ring,0.15,{Transparency=0.45}) end)
+            box.FocusLost:Connect(function(enter)
+                ring.Color=WHITE; ring.Thickness=1; tween(ring,0.15,{Transparency=0.86})
+                if props.onFocusLost then props.onFocusLost(enter) end
+            end)
+            if props.secret then
+                local overlay=text(box,{Size=UDim2.fromScale(1,1),TextSize=13,ZIndex=2},C.label)
+                local reveal=new("TextButton",{Name=props.revealName,Text="Show",Font=F.medium,TextSize=11,TextColor3=C.label,AutoButtonColor=false,
+                    Size=UDim2.fromOffset(42,18),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-4,0.5,0),BackgroundColor3=WHITE,
+                    BackgroundTransparency=0.86,BorderSizePixel=0},frame)
+                corner(reveal,9)
+                maskable(box,overlay,reveal)
+            end
+            return box,frame
+        end
+        -- Switch: blue when on; the knob stretches into a lens while pressed.
+        S.switch=function(row,value,onChange)
+            local track=new("Frame",{Name="Switch",Size=UDim2.fromOffset(38,22),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-12,0.5,0),
+                BackgroundColor3=WHITE,BackgroundTransparency=0.84,BorderSizePixel=0},row)
+            corner(track,11)
+            -- Hidden On/Off value, mirrored from the Windows switch for accessibility tools.
+            local state=label(track,{name="State",text="",size=1,box=UDim2.fromOffset(0,0)})
+            state.Visible=false
+            local knob=new("Frame",{Size=UDim2.fromOffset(18,18),AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,2,0.5,0),
+                BackgroundColor3=WHITE,BorderSizePixel=0},track)
+            corner(knob,9); stroke(knob,BLACK,0.85)
+            local function place(wide)
+                local width=wide and 24 or 18
+                tween(knob,0.3,{Size=UDim2.fromOffset(width,18),Position=UDim2.new(0,value and 36-width or 2,0.5,0)},Enum.EasingStyle.Back)
+            end
+            local function set(on,silent)
+                value=on
+                state.Text=on and "On" or "Off"
+                tween(track,0.2,{BackgroundColor3=on and C.accent or WHITE,BackgroundTransparency=on and 0 or 0.84})
+                place(false)
+                if not silent then onChange(on) end
+            end
+            set(value,true)
+            if row:IsA("GuiButton") then
+                row.MouseButton1Down:Connect(function() place(true) end)
+                row.MouseLeave:Connect(function() place(false) end)
+            end
+            return set,function() set(not value) end
+        end
+        local openMenu
+        S.popup=function(row,props)
+            local value=props.value
+            local b=glass(row,{class="TextButton",name=props.name,size=UDim2.new(props.widthScale or 0.5,0,0,24),anchor=Vector2.new(1,0.5),
+                position=UDim2.new(1,-12,0.5,0),radius=12,transparency=0.87})
+            b.Text=""
+            local shown=label(b,{size=12,box=UDim2.new(1,-34,1,0),position=UDim2.fromOffset(10,0),z=2})
+            chevron(b,UDim2.new(1,-13,0.5,0),C.label,"updown")
+            local menu=new("ScrollingFrame",{Name=props.name.."Menu",Size=UDim2.new(1,24,0,40),BackgroundColor3=C.menu,BackgroundTransparency=0.02,
+                BorderSizePixel=0,Visible=false,ScrollBarThickness=3,ScrollBarImageColor3=C.tertiary,CanvasSize=UDim2.new(),
+                AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=30},b)
+            corner(menu,10); stroke(menu,WHITE,0.85)
+            new("UIListLayout",{SortOrder=Enum.SortOrder.LayoutOrder},menu)
+            pad(menu,5,5,5,5)
+            local options={}
+            local function display(option) return option and (props.display and props.display(option) or option) or (props.placeholder or "Choose") end
+            local function paint()
+                shown.Text=display(value)
+                for _,item in ipairs(menu:GetChildren()) do
+                    if item:IsA("TextButton") then item:FindFirstChild("Check").Text=item:GetAttribute("Value")==value and "✓" or "" end
+                end
+            end
+            local function close()
+                menu.Visible=false
+                for _,frame in ipairs(props.lift or {}) do frame.ZIndex=1 end
+                if openMenu==close then openMenu=nil end
+            end
+            local handle={button=b}
+            function handle.Refresh(values)
+                for _,item in ipairs(menu:GetChildren()) do if item:IsA("TextButton") then item:Destroy() end end
+                options=values
+                if value~=nil and not table.find(values,value) then value=nil end
+                for i,option in ipairs(values) do
+                    local item=new("TextButton",{Name=props.optionName and props.optionName(option) or "Option_"..option,Text="",AutoButtonColor=false,
+                        Size=UDim2.new(1,0,0,24),BackgroundColor3=C.accent,BackgroundTransparency=1,BorderSizePixel=0,LayoutOrder=i,ZIndex=31},menu)
+                    item:SetAttribute("Value",option)
+                    corner(item,6)
+                    label(item,{name="Check",size=12,font=F.bold,box=UDim2.fromOffset(16,24),position=UDim2.fromOffset(5,0),z=32})
+                    label(item,{text=display(option),size=13,box=UDim2.new(1,-30,1,0),position=UDim2.fromOffset(22,0),z=32})
+                    item.MouseEnter:Connect(function() item.BackgroundTransparency=0 end)
+                    item.MouseLeave:Connect(function() item.BackgroundTransparency=1 end)
+                    item.Activated:Connect(function() value=option; paint(); close(); props.onChange(option) end)
+                end
+                menu.Size=UDim2.new(1,24,0,math.min(#values*24+10,230))
+                paint()
+            end
+            function handle.Set(option) value=option; paint(); close() end
+            b.Activated:Connect(function()
+                if menu.Visible then close(); return end
+                if openMenu then openMenu() end
+                if #options==0 then return end
+                placeFlyout(menu,b,S.pageArea,menu.Size.Y.Offset)
+                menu.Position=UDim2.new(0,-12,menu.Position.Y.Scale,menu.Position.Y.Offset)
+                menu.Visible=true
+                for _,frame in ipairs(props.lift or {}) do frame.ZIndex=10 end
+                openMenu=close
+            end)
+            handle.Refresh(props.options or {})
+            return handle
+        end
+        S.closeMenus=function() if openMenu then openMenu() end end
+        -- Segmented control with a glass lens that stretches as it slides.
+        S.filterBar=function(parent,options,value,y,onChange)
+            local track=glass(parent,{name="ProviderFilters",size=UDim2.new(1,-170,0,28),position=UDim2.fromOffset(0,y),radius=14,transparency=0.92})
+            local share=1/#options
+            local lens=glass(track,{name="Lens",size=UDim2.new(share,-4,1,-4),position=UDim2.fromOffset(2,2),radius=12,transparency=0.8,rim=0.7})
+            local buttons={}
+            local function paint(animate)
+                for i,option in ipairs(options) do
+                    local active=option==value
+                    buttons[i].Font=active and F.bold or F.medium
+                    buttons[i].TextColor3=active and C.label or C.secondary
+                    if active then
+                        local goal=UDim2.new(share*(i-1),2,0,2)
+                        if animate then
+                            tween(lens,0.14,{Size=UDim2.new(share*1.15,-4,1,-4)})
+                            tween(lens,0.38,{Position=goal},Enum.EasingStyle.Back)
+                            task.delay(0.14,function() tween(lens,0.24,{Size=UDim2.new(share,-4,1,-4)},Enum.EasingStyle.Back) end)
+                        else
+                            lens.Position=goal
+                        end
+                    end
+                end
+            end
+            for i,option in ipairs(options) do
+                local b=new("TextButton",{Name="ProviderFilter_"..option,Text=option,Font=F.medium,TextSize=12,TextColor3=C.secondary,
+                    AutoButtonColor=false,BackgroundTransparency=1,Size=UDim2.fromScale(share,1),Position=UDim2.fromScale(share*(i-1),0),ZIndex=3},track)
+                buttons[i]=b
+                b.Activated:Connect(function() value=option; paint(true); onChange(option) end)
+            end
+            paint(false)
+            return function(option) value=option; paint(true) end,y+40
+        end
+        S.info=function(parent,props)
+            local tones={info=C.accent,success=C.success,warning=C.warning}
+            local box=new("Frame",{Name=props.name or "Info",Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=WHITE,
+                BackgroundTransparency=0.95,BorderSizePixel=0,LayoutOrder=props.order or 0},parent)
+            corner(box,12); stroke(box,WHITE,0.92)
+            pad(box,12,props.action and 140 or 14,12,44)
+            local icon=new("Frame",{Size=UDim2.fromOffset(20,20),Position=UDim2.fromOffset(-32,0),BackgroundColor3=tones[props.severity or "info"],
+                BorderSizePixel=0},box)
+            corner(icon,10)
+            label(icon,{text=props.severity=="success" and "✓" or props.severity=="warning" and "!" or "i",font=F.bold,size=11,
+                color=props.severity=="warning" and BLACK or WHITE,align=Enum.TextXAlignment.Center})
+            local stack=new("Frame",{Size=UDim2.fromScale(1,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1},box)
+            new("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},stack)
+            if props.title then label(stack,{text=props.title,font=F.bold,box=UDim2.new(1,0,0,18)}).LayoutOrder=1 end
+            local message=label(stack,{name="Message",text=props.message or "",size=12,color=C.secondary,box=UDim2.new(1,0,0,0)})
+            message.AutomaticSize=Enum.AutomaticSize.Y; message.TextWrapped=true; message.TextTruncate=Enum.TextTruncate.None; message.LayoutOrder=2
+            local action
+            if props.action then
+                action=capsule(box,{name=props.action.name,text=props.action.text,size=UDim2.fromOffset(122,26),anchor=Vector2.new(1,0.5),
+                    position=UDim2.new(1,128,0.5,0),textSize=12})
+                action.Activated:Connect(props.action.callback)
+            end
+            return box,message,action
+        end
+        -- Personality presets as a pop-up button with emoji labels.
+        S.presetPicker=function(G,presets,onPick)
+            local byName,names={},{}
+            for _,preset in ipairs(presets) do byName[preset.name]=preset; table.insert(names,preset.name) end
+            local row=G.row({name="PersonalityPreset",title="Preset"})
+            local handle=S.popup(row,{name="PersonalityPresetPicker",options=names,value=nil,widthScale=0.5,lift={row,G.frame},
+                optionName=function(name) return "Personality_"..name end,
+                display=function(name) return byName[name].emoji.."  "..name end,placeholder="Custom",
+                onChange=function(name) onPick(byName[name]) end})
+            local picker={}
+            function picker.paint(name) handle.Set(name) end
+            function picker.fit() end
+            return picker
+        end
+        S.providerToolbar=function()
+            searchGlyph(searchCapsule,18,C.secondary)
+            local search=new("TextBox",{Name="ProviderSearch",Text="",PlaceholderText="Search",PlaceholderColor3=C.tertiary,TextColor3=C.label,
+                Font=F.body,TextSize=13,ClearTextOnFocus=false,BackgroundTransparency=1,Size=UDim2.new(1,-60,1,0),Position=UDim2.fromOffset(32,0),
+                TextXAlignment=Enum.TextXAlignment.Left,ZIndex=3},searchCapsule)
+            local clear=new("TextButton",{Name="ClearProviderSearch",Text="×",Font=F.bold,TextSize=12,TextColor3=C.window,AutoButtonColor=false,
+                Size=UDim2.fromOffset(16,16),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-8,0.5,0),BackgroundColor3=C.secondary,
+                BorderSizePixel=0,ZIndex=4,Visible=false},searchCapsule)
+            corner(clear,8)
+            return search,clear,nil,0
+        end
+        S.emptyState=function(parent,props)
+            local holder=new("Frame",{Name=props.name,Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Visible=false},parent)
+            label(holder,{text=props.title,font=F.bold,size=17,box=UDim2.new(1,0,0,22),position=UDim2.fromOffset(0,60),align=Enum.TextXAlignment.Center})
+            local message=label(holder,{name="Message",text=props.message,size=12,color=C.secondary,box=UDim2.new(1,-40,0,32),
+                position=UDim2.fromOffset(20,86),align=Enum.TextXAlignment.Center})
+            message.TextWrapped=true
+            local action=capsule(holder,{name=props.buttonName,text=props.buttonText,size=UDim2.fromOffset(170,28),anchor=Vector2.new(0.5,0),
+                position=UDim2.new(0.5,0,0,128),textSize=12})
+            return holder,message,action
+        end
+        S.resultCount=function(page)
+            return label(page,{name="ProviderResultCount",size=12,color=C.secondary,box=UDim2.fromOffset(160,28),anchor=Vector2.new(1,0),
+                position=UDim2.fromScale(1,0),align=Enum.TextXAlignment.Right})
+        end
+        return S
+    end
+    return {Windows=Windows,macOS=MacOS,kit=kit}
+end)()
+
 local function RunSetupWizard()
+    local K=SetupSkins.kit
     local draft=table.clone(Cfg)
-    local voiceControls
     local provider=PROVIDERS[1]
     for _,entry in ipairs(PROVIDERS) do if entry.id==draft.Provider then provider=entry; break end end
     local modelId=draft.Model
     local step,completed,closed=1,1,false
-    local updating=false
     local setupConnections={}
     local done=Instance.new("BindableEvent")
     local gui=Instance.new("ScreenGui")
@@ -2203,190 +3377,77 @@ local function RunSetupWizard()
         end
         table.clear(setupConnections)
     end)
-    local function corner(node,radius)
-        local obj=Instance.new("UICorner"); obj.CornerRadius=UDim.new(0,radius or 8); obj.Parent=node
-    end
-    local function stroke(node,color)
-        local obj=Instance.new("UIStroke"); obj.Color=color or C.BORDER; obj.Thickness=1; obj.Parent=node; return obj
-    end
-    local function frame(parent,name,size,position,color)
-        local obj=Instance.new("Frame"); obj.Name=name; obj.Size=size; obj.Position=position or UDim2.new()
-        obj.BackgroundColor3=color or C.BG; obj.BorderSizePixel=0; obj.Parent=parent; return obj
-    end
-    local function label(parent,text,size,position,fontSize,color,bold)
-        local obj=Instance.new("TextLabel"); obj.Size=size; obj.Position=position or UDim2.new()
-        obj.BackgroundTransparency=1; obj.Text=text; obj.TextColor3=color or C.TEXT
-        obj.TextSize=fontSize or 14; obj.Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham
-        obj.TextXAlignment=Enum.TextXAlignment.Left; obj.TextWrapped=true; obj.Parent=parent; return obj
-    end
-    local function button(parent,name,text,size,position,primary)
-        local obj=Instance.new("TextButton"); obj.Name=name; obj.Text=text; obj.Size=size; obj.Position=position or UDim2.new()
-        obj.BackgroundColor3=primary and C.ACCENT or C.CARD; obj.TextColor3=primary and C.INK or C.TEXT
-        obj.BorderSizePixel=0; obj.Font=Enum.Font.GothamBold; obj.TextSize=14; obj.AutoButtonColor=false
-        obj.Parent=parent; corner(obj,8)
-        local outline=stroke(obj,primary and C.ACCENT or C.BORDER)
-        connect(obj.MouseEnter,function() outline.Color=C.ACCENT end)
-        connect(obj.MouseLeave,function() outline.Color=primary and C.ACCENT or C.BORDER end)
-        connect(obj.SelectionGained,function() outline.Thickness=2 end)
-        connect(obj.SelectionLost,function() outline.Thickness=1 end)
-        return obj,outline
-    end
-    local function scroll(parent,name,size,position)
-        local obj=Instance.new("ScrollingFrame"); obj.Name=name; obj.Size=size; obj.Position=position
-        obj.BackgroundTransparency=1; obj.BorderSizePixel=0; obj.ScrollBarThickness=4
-        obj.ScrollBarImageColor3=C.MUTED; obj.CanvasSize=UDim2.new(); obj.AutomaticCanvasSize=Enum.AutomaticSize.Y
-        obj.ScrollingDirection=Enum.ScrollingDirection.Y; obj.Parent=parent; return obj
-    end
-    local function input(parent,name,value,placeholder,size,position,multiline)
-        local obj=Instance.new("TextBox"); obj.Name=name; obj.Text=value or ""; obj.PlaceholderText=placeholder or ""
-        obj.Size=size; obj.Position=position; obj.BackgroundColor3=C.CARD; obj.BorderSizePixel=0
-        obj.TextColor3=C.TEXT; obj.PlaceholderColor3=C.MUTED; obj.TextSize=14; obj.Font=Enum.Font.Gotham
-        obj.TextXAlignment=Enum.TextXAlignment.Left; obj.ClearTextOnFocus=false; obj.MultiLine=multiline or false
-        obj.TextWrapped=multiline or false; obj.TextYAlignment=multiline and Enum.TextYAlignment.Top or Enum.TextYAlignment.Center
-        obj.Parent=parent; corner(obj); local outline=stroke(obj)
-        local pad=Instance.new("UIPadding"); pad.PaddingLeft=UDim.new(0,12); pad.PaddingRight=UDim.new(0,12)
-        if multiline then pad.PaddingTop=UDim.new(0,12); pad.PaddingBottom=UDim.new(0,12) end
-        pad.Parent=obj
-        connect(obj.Focused,function() outline.Color=C.ACCENT end)
-        connect(obj.FocusLost,function() outline.Color=C.BORDER end)
-        return obj
-    end
-    local overlay=frame(gui,"Backdrop",UDim2.fromScale(1,1),nil,Color3.fromRGB(0,0,0)); overlay.BackgroundTransparency=0.35
-    local card=frame(gui,"SetupWindow",UDim2.fromOffset(1000,720),UDim2.fromScale(0.5,0.5))
-    card.AnchorPoint=Vector2.new(0.5,0.5); card.ClipsDescendants=true; corner(card,14); stroke(card)
-    local scale=Instance.new("UIScale"); scale.Parent=card
-    label(card,"AI / CHATBOT",UDim2.new(0,200,0,26),UDim2.fromOffset(24,16),16,C.TEXT,true)
-    label(card,"SETUP  ·  v"..VERSION,UDim2.new(0,200,0,18),UDim2.fromOffset(24,43),11,C.MUTED)
-    local close=button(card,"CloseSetup","Close",UDim2.fromOffset(72,36),UDim2.new(1,-96,0,20))
-    connect(close.Activated,function() finish(true) end)
-    local nav=frame(card,"SetupNavigation",UDim2.new(1,-48,0,44),UDim2.fromOffset(24,78)); nav.BackgroundTransparency=1
-    local navButtons={}
-    local heading=label(card,"",UDim2.new(1,-48,0,36),UDim2.fromOffset(24,140),26,C.TEXT,true)
-    local subtitle=label(card,"",UDim2.new(1,-48,0,36),UDim2.fromOffset(24,178),14,C.MUTED)
+    local style=SetupStyle()
+    local STEPS={"Provider","Connection","Model","Personality","Voice"}
+    local showStep,goNext
+    K.new("Frame",{Name="Backdrop",Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.new(0,0,0),
+        BackgroundTransparency=style=="macOS" and 0.62 or 0.72,BorderSizePixel=0},gui)
+    local S=SetupSkins[style]({gui=gui,connect=connect,steps=STEPS,
+        onClose=function() finish(true) end,
+        onBack=function() if step>1 then showStep(step-1) end end,
+        onForward=function() if step<completed then showStep(step+1) end end,
+        onNav=function(i) if i<=completed and i~=step then showStep(i) end end})
+    connect(S.closeButton.Activated,function() finish(true) end)
     local pages={}
     for i=1,5 do
-        pages[i]=frame(card,"SetupPage_"..i,UDim2.new(1,-48,1,-320),UDim2.fromOffset(24,220))
-        pages[i].BackgroundTransparency=1; pages[i].Visible=i==1
+        pages[i]=K.new("Frame",{Name="SetupPage_"..i,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Visible=i==1},S.pageArea)
     end
-    local footer=frame(card,"SetupFooter",UDim2.new(1,0,0,88),UDim2.new(0,0,1,-88))
-    frame(footer,"FooterRule",UDim2.new(1,0,0,1),nil,C.BORDER)
-    local summary=label(footer,"",UDim2.new(1,-320,0,44),UDim2.fromOffset(24,23),12,C.MUTED)
-    local errorLabel=label(card,"",UDim2.new(1,-48,0,28),UDim2.new(0,24,1,-118),12,C.RED)
-    errorLabel.Name="SetupError"
-    local back=button(footer,"SetupBack","Back",UDim2.fromOffset(80,42),UDim2.new(1,-294,0,24))
-    local nextButton=button(footer,"SetupContinue","Continue",UDim2.fromOffset(178,42),UDim2.new(1,-202,0,24),true)
-    local function updateSummary()
-        summary.Text=provider.name.."\n"..(modelId~="" and modelId or "Choose a model").."  ·  Thinking off"
-            .."\n"..(draft.TTSEnabled and "Voice: "..draft.TTSProvider.." · "..draft.TTSVoice or "Voice output off")
-        if step==5 then nextButton.Text=draft.TTSEnabled and "Start bot with voice" or "Start bot · text only" end
+    local function updateContinue()
+        S.continueButton.Text=step==5 and (draft.TTSEnabled and "Start bot with voice" or "Start bot · text only") or S.nextLabel
     end
 
-    -- Provider: search, filter chips with live counts, and branded tiles with a clear selected state.
-    local quick=TweenInfo.new(0.14,Enum.EasingStyle.Quart,Enum.EasingDirection.Out)
-    local function tween(node,goal) TweenService:Create(node,quick,goal):Play() end
-    local TILE_HEIGHT,TILE_GAP=92,10
-    local VISION=Color3.fromRGB(150,186,255)
-    local filter,providerRows,columns,showCounts="All",{},3,true
+    -- Step 1 · Provider: search, filters, grouped rows with a selection mark.
+    local providerSearch,clearSearch,resultCount,filterTop=S.providerToolbar(pages[1])
+    resultCount=resultCount or S.resultCount(pages[1])
+    local filter,providerRows="All",{}
     local filters={"All","Cloud","No key","Vision","Local"}
-    local filterButtons={}
-    local searchField=frame(pages[1],"ProviderSearchField",UDim2.new(1,0,0,40),UDim2.new(),C.CARD); corner(searchField)
-    local searchStroke=stroke(searchField)
-    -- Magnifier drawn from primitives so it does not depend on font glyph coverage.
-    local lens=frame(searchField,"SearchIcon",UDim2.fromOffset(10,10),UDim2.new(0,20,0.5,-2)); lens.AnchorPoint=Vector2.new(0.5,0.5)
-    lens.BackgroundTransparency=1; corner(lens,5); stroke(lens,C.MUTED).Thickness=2
-    local lensHandle=frame(searchField,"SearchIconHandle",UDim2.fromOffset(6,2),UDim2.new(0,27,0.5,5),C.MUTED)
-    lensHandle.AnchorPoint=Vector2.new(0.5,0.5); lensHandle.Rotation=45; corner(lensHandle,1)
-    local providerSearch=Instance.new("TextBox"); providerSearch.Name="ProviderSearch"; providerSearch.Text=""
-    providerSearch.PlaceholderText="Search providers or model IDs"; providerSearch.Size=UDim2.new(1,-112,1,0)
-    providerSearch.Position=UDim2.fromOffset(40,0); providerSearch.BackgroundTransparency=1; providerSearch.ClearTextOnFocus=false
-    providerSearch.TextColor3=C.TEXT; providerSearch.PlaceholderColor3=C.MUTED; providerSearch.TextSize=14; providerSearch.Font=Enum.Font.Gotham
-    providerSearch.TextXAlignment=Enum.TextXAlignment.Left; providerSearch.Parent=searchField
-    local clearSearch=button(searchField,"ClearProviderSearch","Clear",UDim2.fromOffset(60,28),UDim2.new(1,-6,0.5,0))
-    clearSearch.AnchorPoint=Vector2.new(1,0.5); clearSearch.BackgroundColor3=C.BG; clearSearch.TextSize=12; clearSearch.Visible=false
-    local filterBar=frame(pages[1],"ProviderFilters",UDim2.new(1,0,0,34),UDim2.fromOffset(0,48)); filterBar.BackgroundTransparency=1
-    local chipLayout=Instance.new("UIListLayout"); chipLayout.FillDirection=Enum.FillDirection.Horizontal; chipLayout.Padding=UDim.new(0,6)
-    chipLayout.SortOrder=Enum.SortOrder.LayoutOrder; chipLayout.VerticalAlignment=Enum.VerticalAlignment.Center; chipLayout.Parent=filterBar
-    local function paintChip(row)
-        local active=row.name==filter
-        tween(row.button,{BackgroundColor3=active and C.ACCENT or row.hover and C.HOVER or C.CARD,
-            TextColor3=active and C.INK or row.hover and C.TEXT or C.MUTED,TextTransparency=not active and row.count==0 and 0.45 or 0})
-        tween(row.stroke,{Color=(active or row.hover) and C.ACCENT or C.BORDER,Transparency=row.hover and not active and 0.4 or 0})
-        row.button.Text=row.name..(showCounts and row.count and "  <font transparency=\"0.45\">"..row.count.."</font>" or "")
-    end
-    for i,name in ipairs(filters) do
-        local chip=Instance.new("TextButton"); chip.Name="ProviderFilter_"..name; chip.Text=name; chip.LayoutOrder=i
-        chip.Size=UDim2.new(0.2,-5,0,34); chip.BackgroundColor3=C.CARD; chip.TextColor3=C.MUTED; chip.BorderSizePixel=0
-        chip.Font=Enum.Font.GothamBold; chip.TextSize=13; chip.RichText=true; chip.AutoButtonColor=false; chip.Parent=filterBar
-        corner(chip,17)
-        local row={button=chip,stroke=stroke(chip),name=name,hover=false}
-        connect(chip.MouseEnter,function() row.hover=true; paintChip(row) end)
-        connect(chip.MouseLeave,function() row.hover=false; paintChip(row) end)
-        connect(chip.SelectionGained,function() row.stroke.Thickness=2 end)
-        connect(chip.SelectionLost,function() row.stroke.Thickness=1 end)
-        filterButtons[name]=row
-    end
-    -- Selection stays visible above the grid even when filters hide its tile.
-    local meta=frame(pages[1],"ProviderMeta",UDim2.new(1,0,0,20),UDim2.fromOffset(0,94)); meta.BackgroundTransparency=1
-    local selectedRow=frame(meta,"SelectedProvider",UDim2.fromScale(1,1)); selectedRow.BackgroundTransparency=1
-    local selectedLayout=Instance.new("UIListLayout"); selectedLayout.FillDirection=Enum.FillDirection.Horizontal
-    selectedLayout.VerticalAlignment=Enum.VerticalAlignment.Center; selectedLayout.Padding=UDim.new(0,7)
-    selectedLayout.SortOrder=Enum.SortOrder.LayoutOrder; selectedLayout.Parent=selectedRow
-    local selectedDot=frame(selectedRow,"SelectedDot",UDim2.fromOffset(6,6),nil,C.ACCENT); selectedDot.LayoutOrder=1; corner(selectedDot,3)
-    local function inline(text,color,bold,order)
-        local obj=label(selectedRow,text,UDim2.fromScale(0,1),nil,12,color,bold)
-        obj.AutomaticSize=Enum.AutomaticSize.X; obj.TextWrapped=false; obj.LayoutOrder=order; return obj
-    end
-    inline("Selected",C.MUTED,false,2)
-    local selectedName=inline("",C.ACCENT,true,3); selectedName.Name="SelectedProviderName"
-    inline("·",C.MUTED,false,4)
-    local selectedAuth=inline("",C.MUTED,false,5); selectedAuth.Name="SelectedProviderAuth"
-    local resultCount=label(meta,"",UDim2.new(0,160,1,0),UDim2.new(1,-160,0,0),12,C.MUTED); resultCount.Name="ProviderResultCount"
-    resultCount.TextXAlignment=Enum.TextXAlignment.Right; resultCount.TextWrapped=false
-    local providerList=scroll(pages[1],"ProviderList",UDim2.new(1,0,1,-124),UDim2.fromOffset(0,124))
-    -- Inset keeps the 2px selected outline from clipping against the scroll frame.
-    local listPad=Instance.new("UIPadding"); listPad.PaddingTop=UDim.new(0,2); listPad.PaddingLeft=UDim.new(0,2)
-    listPad.PaddingBottom=UDim.new(0,4); listPad.Parent=providerList
-    local grid=Instance.new("UIGridLayout"); grid.CellPadding=UDim2.fromOffset(TILE_GAP,TILE_GAP)
-    grid.CellSize=UDim2.fromOffset(300,TILE_HEIGHT); grid.SortOrder=Enum.SortOrder.LayoutOrder; grid.Parent=providerList
-    local empty=frame(pages[1],"ProviderEmptyState",UDim2.new(1,0,1,-124),UDim2.fromOffset(0,124),C.CARD); empty.Visible=false
-    corner(empty,12); stroke(empty).Transparency=0.4
-    local emptyBody=frame(empty,"EmptyContent",UDim2.new(1,-32,0,132),UDim2.fromScale(0.5,0.45)); emptyBody.AnchorPoint=Vector2.new(0.5,0.5)
-    emptyBody.BackgroundTransparency=1
-    label(emptyBody,"No matching providers",UDim2.new(1,0,0,26),nil,18,C.TEXT,true).TextXAlignment=Enum.TextXAlignment.Center
-    local emptyHint=label(emptyBody,"",UDim2.new(1,0,0,36),UDim2.fromOffset(0,30),13,C.MUTED); emptyHint.TextXAlignment=Enum.TextXAlignment.Center
-    local reset=button(emptyBody,"ResetProviderFilters","Reset search & filters",UDim2.fromOffset(200,38),UDim2.new(0.5,0,0,82))
-    reset.AnchorPoint=Vector2.new(0.5,0)
-    local refreshModels,showStep,refreshConnection,renderModels
-    local function paintTile(row)
-        local selected=row.entry.id==provider.id
-        local hot=row.hover or row.focus
-        tween(row.frame,{BackgroundColor3=row.pressed and C.BG or selected and C.SELECTED or hot and C.HOVER or C.CARD})
-        tween(row.stroke,{Color=(selected or hot) and C.ACCENT or C.BORDER,Transparency=not selected and not row.focus and row.hover and 0.45 or 0})
-        row.stroke.Thickness=(selected or row.focus) and 2 or 1
-        row.mark.Visible=selected
-    end
+    local refreshModels,refreshConnection,renderModels,filterProviders
+    local setFilter,listTop=S.filterBar(pages[1],filters,"All",filterTop,function(name) filter=name; filterProviders() end)
+    local listHolder=K.new("Frame",{Name="ProviderListHolder",Size=UDim2.new(1,0,1,-listTop),Position=UDim2.fromOffset(0,listTop),
+        BackgroundTransparency=1},pages[1])
+    local providerList=S.scrollPage(listHolder,"ProviderList")
+    local empty,_,reset=S.emptyState(pages[1],{name="ProviderEmptyState",title="No matching providers",
+        message="Try a provider name, a model ID, or another filter.",buttonName="ResetProviderFilters",buttonText="Reset search & filters"})
+    empty.Position=UDim2.fromOffset(0,listTop); empty.Size=UDim2.new(1,0,1,-listTop)
+    local GROUPS={{"Free to try",function(p) return p.noKey and not p.isLocal end},
+        {"Cloud services",function(p) return not p.noKey and not p.isLocal and p.id~="custom" end},
+        {"Local and custom",function(p) return p.isLocal or p.id=="custom" end}}
+    local groupFrames={}
+    local function kindText(entry) return entry.isLocal and "Local server" or entry.id=="custom" and "Your endpoint" or "Cloud" end
+    local function accessText(entry) return entry.id=="custom" and "Optional API key" or entry.noKey and "No API key" or "API key required" end
     local function selectProvider(entry)
         if provider.id~=entry.id then provider=entry; modelId=entry.defaultModel; completed=1 end
-        for _,row in pairs(providerRows) do paintTile(row) end
-        selectedName.Text=provider.name
-        selectedAuth.Text=provider.id=="custom" and "Optional API key" or provider.noKey and "No API key" or "API key required"
-        updateSummary()
+        for id,row in pairs(providerRows) do row.mark(id==provider.id) end
+        updateContinue()
+    end
+    for g,spec in ipairs(GROUPS) do
+        local G=S.group(providerList,{name="ProviderGroup_"..g,title=spec[1],order=g})
+        groupFrames[g]=G.frame
+        for _,entry in ipairs(PROVIDERS) do
+            if spec[2](entry) then
+                local summary=kindText(entry).."  ·  "..accessText(entry)..(entry.vision and "  ·  Avatar vision" or "")
+                local row,_,detail=G.row({name="ProviderRow_"..entry.id,clickable=true,title=entry.name,subtitle=summary,
+                    subtitleName="ProviderDetail",icon=K.monogram(entry),iconColor=entry.color,right=40})
+                local search=entry.name.." "..entry.id
+                for _,model in ipairs(entry.models) do search=search.." "..model.id.." "..(model.label or "") end
+                providerRows[entry.id]={row=row,detail=detail,summary=summary,group=g,mark=S.mark(row),
+                    search=search:lower(),identity=(entry.name.." "..entry.id):lower()}
+                connect(row.Activated,function() selectProvider(entry) end)
+            end
+        end
     end
     local function inFilter(entry,name)
         return name=="All" or name=="Cloud" and not entry.isLocal and entry.id~="custom"
             or name=="No key" and entry.noKey or name=="Vision" and entry.vision or name=="Local" and entry.isLocal
     end
-    local function filterProviders()
+    filterProviders=function()
         local query=Trim(providerSearch.Text):lower()
-        local counts,shown={},0
-        for _,name in ipairs(filters) do counts[name]=0 end
+        local shown,perGroup=0,{0,0,0}
         for _,entry in ipairs(PROVIDERS) do
             local row=providerRows[entry.id]
-            local matched=query=="" or row.search:find(query,1,true)~=nil
-            for _,name in ipairs(filters) do if matched and inFilter(entry,name) then counts[name]=counts[name]+1 end end
-            local visible=matched and inFilter(entry,filter)
-            row.frame.Visible=visible
-            if visible then shown=shown+1 end
+            local visible=(query=="" or row.search:find(query,1,true)~=nil) and inFilter(entry,filter)
+            row.row.Visible=visible
+            if visible then shown=shown+1; perGroup[row.group]=perGroup[row.group]+1 end
             -- Name the model when the query matched a model ID rather than the provider.
             local model
             if query~="" and not row.identity:find(query,1,true) then
@@ -2395,229 +3456,144 @@ local function RunSetupWizard()
                 end
             end
             row.detail.Text=model and "Matches "..model.id or row.summary
-            row.detail.TextColor3=model and C.ACCENT or C.MUTED
+            row.detail.TextColor3=model and S.colors.accent or S.colors.secondary
         end
-        empty.Visible=shown==0; providerList.Visible=shown>0
-        emptyHint.Text=filter~="All" and counts.All>0
-            and string.format("%d %s outside the “%s” filter.",counts.All,counts.All==1 and "provider matches" or "providers match",filter)
-            or "Try a provider name, a model ID, or another filter."
+        for g,frame in ipairs(groupFrames) do frame.Visible=perGroup[g]>0 end
         resultCount.Text=shown==#PROVIDERS and #PROVIDERS.." providers" or shown.." of "..#PROVIDERS.." shown"
+        empty.Visible=shown==0; listHolder.Visible=shown>0
         clearSearch.Visible=providerSearch.Text~=""
-        for _,row in pairs(filterButtons) do row.count=counts[row.name]; paintChip(row) end
     end
-    local function monogram(name)
-        local words={}
-        for word in name:gsub("%b()",""):gmatch("%w[%w%.]*") do table.insert(words,word) end
-        local first,second=words[1] or "?",words[2]
-        if first:match("^%u%u") then return first:sub(1,2) end
-        if second then return (first:sub(1,1)..second:sub(1,1)):upper() end
-        local capitals=first:gsub("[^%u]","")
-        return #capitals>=2 and capitals:sub(1,2) or first:sub(1,1):upper()..first:sub(2,2)
-    end
-    local function pill(parent,text,order,tint)
-        local obj=label(parent,text,UDim2.fromOffset(0,20),nil,11,tint or C.MUTED,true)
-        obj.AutomaticSize=Enum.AutomaticSize.X; obj.TextWrapped=false; obj.TextXAlignment=Enum.TextXAlignment.Center
-        obj.LayoutOrder=order; obj.BackgroundColor3=tint or C.BG; obj.BackgroundTransparency=tint and 0.86 or 0; corner(obj,10)
-        local pad=Instance.new("UIPadding"); pad.PaddingLeft=UDim.new(0,8); pad.PaddingRight=UDim.new(0,8); pad.Parent=obj
-    end
-    for i,entry in ipairs(PROVIDERS) do
-        local tile=frame(providerList,"ProviderRow_"..entry.id,UDim2.fromOffset(300,TILE_HEIGHT),nil,C.CARD); tile.LayoutOrder=i; corner(tile,10)
-        local outline=stroke(tile)
-        -- Tinted brand monogram: identity at a glance without loading external images.
-        local badge=frame(tile,"ProviderBadge",UDim2.fromOffset(38,38),UDim2.fromOffset(14,14),entry.color)
-        badge.BackgroundTransparency=0.78; corner(badge,10); stroke(badge,entry.color).Transparency=0.5
-        label(badge,entry.id=="custom" and "</>" or monogram(entry.name),UDim2.fromScale(1,1),nil,14,C.TEXT,true).TextXAlignment=Enum.TextXAlignment.Center
-        local title=label(tile,entry.name,UDim2.new(1,-100,0,20),UDim2.fromOffset(64,14),15,C.TEXT,true)
-        title.TextWrapped=false; title.TextTruncate=Enum.TextTruncate.AtEnd
-        local summary=(entry.isLocal or entry.id=="custom") and "Lists models from your server"
-            or #entry.models==0 and "Enter any model ID" or #entry.models==1 and "1 suggested model" or #entry.models.." suggested models"
-        local detail=label(tile,summary,UDim2.new(1,-78,0,16),UDim2.fromOffset(64,36),12,C.MUTED); detail.Name="ProviderDetail"
-        detail.TextWrapped=false; detail.TextTruncate=Enum.TextTruncate.AtEnd
-        local tags=frame(tile,"ProviderTags",UDim2.new(1,-78,0,20),UDim2.fromOffset(64,60)); tags.BackgroundTransparency=1
-        local tagLayout=Instance.new("UIListLayout"); tagLayout.FillDirection=Enum.FillDirection.Horizontal; tagLayout.Padding=UDim.new(0,6)
-        tagLayout.SortOrder=Enum.SortOrder.LayoutOrder; tagLayout.Parent=tags
-        pill(tags,entry.isLocal and "Local" or entry.id=="custom" and "Custom" or "Cloud",1)
-        pill(tags,entry.id=="custom" and "Key optional" or entry.noKey and "No key" or "API key",2,entry.noKey and C.ACCENT or nil)
-        if entry.vision then pill(tags,"Vision",3,VISION) end
-        local mark=frame(tile,"SelectedMark",UDim2.fromOffset(20,20),UDim2.new(1,-14,0,14),C.ACCENT); mark.AnchorPoint=Vector2.new(1,0)
-        mark.Visible=false; corner(mark,10)
-        label(mark,"✓",UDim2.fromScale(1,1),nil,12,C.INK,true).TextXAlignment=Enum.TextXAlignment.Center
-        local search=entry.name.." "..entry.id
-        for _,model in ipairs(entry.models) do search=search.." "..model.id.." "..(model.label or "") end
-        local row={entry=entry,frame=tile,stroke=outline,mark=mark,detail=detail,summary=summary,
-            search=search:lower(),identity=(entry.name.." "..entry.id):lower(),hover=false,focus=false,pressed=false}
-        local hit=Instance.new("TextButton"); hit.Name="SelectProvider_"..entry.id; hit.Size=UDim2.fromScale(1,1)
-        hit.Text=""; hit.BackgroundTransparency=1; hit.Parent=tile
-        connect(hit.Activated,function() selectProvider(entry) end)
-        connect(hit.MouseEnter,function() row.hover=true; paintTile(row) end)
-        connect(hit.MouseLeave,function() row.hover=false; row.pressed=false; paintTile(row) end)
-        connect(hit.MouseButton1Down,function() row.pressed=true; paintTile(row) end)
-        connect(hit.MouseButton1Up,function() row.pressed=false; paintTile(row) end)
-        connect(hit.SelectionGained,function() row.focus=true; paintTile(row) end)
-        connect(hit.SelectionLost,function() row.focus=false; paintTile(row) end)
-        providerRows[entry.id]=row
-    end
-    for name,row in pairs(filterButtons) do connect(row.button.Activated,function() filter=name; filterProviders() end) end
     connect(providerSearch:GetPropertyChangedSignal("Text"),filterProviders)
-    connect(providerSearch.Focused,function() tween(searchStroke,{Color=C.ACCENT}) end)
     connect(providerSearch.FocusLost,function(enterPressed)
-        tween(searchStroke,{Color=C.BORDER})
         if not enterPressed then return end
         for _,entry in ipairs(PROVIDERS) do
-            if providerRows[entry.id].frame.Visible then selectProvider(entry); break end
+            if providerRows[entry.id].row.Visible then selectProvider(entry); break end
         end
     end)
     connect(clearSearch.Activated,function() providerSearch.Text="" end)
-    connect(reset.Activated,function() filter="All"; providerSearch.Text=""; filterProviders() end)
-    local function layoutProviderPage(pageWidth)
-        local inlineFilters=pageWidth>=820
-        local chipsWidth=math.min(500,math.floor(pageWidth*0.5))
-        showCounts=pageWidth>=520
-        searchField.Size=inlineFilters and UDim2.new(1,-(chipsWidth+12),0,40) or UDim2.new(1,0,0,40)
-        filterBar.Size=inlineFilters and UDim2.fromOffset(chipsWidth,40) or UDim2.new(1,0,0,34)
-        filterBar.Position=inlineFilters and UDim2.new(1,-chipsWidth,0,0) or UDim2.fromOffset(0,48)
-        local metaTop=inlineFilters and 52 or 94
-        meta.Position=UDim2.fromOffset(0,metaTop); resultCount.Visible=showCounts
-        providerList.Size=UDim2.new(1,0,1,-(metaTop+30)); providerList.Position=UDim2.fromOffset(0,metaTop+30)
-        empty.Size=providerList.Size; empty.Position=providerList.Position
-        columns=pageWidth>=852 and 3 or pageWidth>=572 and 2 or 1
-        -- 10px covers the outline inset and the scrollbar gutter.
-        grid.CellSize=UDim2.fromOffset(math.floor((pageWidth-10-(columns-1)*TILE_GAP)/columns),TILE_HEIGHT)
-        filterProviders()
-    end
-    -- Scroll a provider remembered from an earlier setup into view.
-    local function revealSelected()
-        local view=providerList.AbsoluteWindowSize
-        if closed or not view or view.Y<=0 then return end
-        local index=0
-        for _,entry in ipairs(PROVIDERS) do
-            if providerRows[entry.id].frame.Visible then index=index+1 end
-            if entry.id==provider.id then break end
-        end
-        local top=math.floor((index-1)/columns)*(TILE_HEIGHT+TILE_GAP)
-        if top+TILE_HEIGHT>view.Y then providerList.CanvasPosition=Vector2.new(0,top) end
-    end
+    connect(reset.Activated,function() filter="All"; setFilter("All"); providerSearch.Text=""; filterProviders() end)
 
-    -- Connection: draft-only settings, masked keys, clear endpoint and storage controls.
-    local connectionScroll=scroll(pages[2],"ConnectionForm",UDim2.fromScale(1,1),UDim2.new())
-    local form=frame(connectionScroll,"ConnectionFields",UDim2.new(0.65,-24,0,350)); form.BackgroundTransparency=1
-    local guide=frame(connectionScroll,"ConnectionGuide",UDim2.new(0.35,0,0,280),UDim2.new(0.65,0,0,0),C.CARD); corner(guide)
-    label(guide,"Connection guide",UDim2.new(1,-32,0,26),UDim2.fromOffset(16,16),16,C.TEXT,true)
-    local guideText=label(guide,"",UDim2.new(1,-32,0,204),UDim2.fromOffset(16,56),14,C.MUTED)
-    guideText.TextYAlignment=Enum.TextYAlignment.Top
-    local endpointLabel=label(form,"Base URL or chat endpoint",UDim2.new(1,0,0,22),UDim2.new(),13,C.TEXT,true)
-    local endpoint=input(form,"SetupCustomEndpoint",draft.CustomEndpoint,"https://your-server.example/v1",UDim2.new(1,0,0,44),UDim2.fromOffset(0,28))
-    local pathLabel=label(form,"Model-list path (optional)",UDim2.new(1,0,0,22),UDim2.fromOffset(0,92),13,C.TEXT,true)
-    local path=input(form,"SetupCustomModelsEndpoint",draft.CustomModelsEndpoint,"Auto-detect /v1/models",UDim2.new(1,0,0,44),UDim2.fromOffset(0,120))
-    local portLabel=label(form,"LM Studio server port",UDim2.new(1,0,0,22),UDim2.new(),13,C.TEXT,true)
-    local port=input(form,"SetupLocalPort",tostring(draft.LMStudioPort),"1234",UDim2.new(1,0,0,44),UDim2.fromOffset(0,28))
-    local keyLabel=label(form,"API key",UDim2.new(1,0,0,22),UDim2.new(),13,C.TEXT,true)
-    local key=input(form,"SetupAPIKey","","Paste your API key",UDim2.new(1,-86,0,44),UDim2.fromOffset(0,28))
-    local mask=label(key,"",UDim2.new(1,-24,1,0),UDim2.fromOffset(12,0),14,C.TEXT); mask.ZIndex=key.ZIndex+1
-    local revealed=false
-    local reveal=button(form,"RevealAPIKey","Show",UDim2.fromOffset(74,44),UDim2.new(1,-74,0,28))
-    local function maskKey()
-        key.TextTransparency=(not revealed and key.Text~="") and 1 or 0
-        mask.Text=not revealed and string.rep("•",math.min(24,#key.Text)) or ""
-        reveal.Text=revealed and "Hide" or "Show"
+    -- Step 2 · Connection: rebuilt for the selected provider.
+    local connectionScroll=S.scrollPage(pages[2],"ConnectionForm")
+    local rememberSet
+    local function updateRemember() if rememberSet then rememberSet(draft.SaveAPIKeys,true) end end
+    local function keyValue()
+        local saved=KEY_MAP[provider.id] and draft[KEY_MAP[provider.id]] or ""
+        return saved:match("^YOUR_") and "" or saved
     end
-    connect(reveal.Activated,function() revealed=not revealed; maskKey() end)
-    connect(key:GetPropertyChangedSignal("Text"),function()
-        if not updating and KEY_MAP[provider.id] then draft[KEY_MAP[provider.id]]=Trim(key.Text) end
-        maskKey()
-    end)
-    connect(endpoint:GetPropertyChangedSignal("Text"),function() draft.CustomEndpoint=Trim(endpoint.Text) end)
-    connect(path:GetPropertyChangedSignal("Text"),function() draft.CustomModelsEndpoint=Trim(path.Text) end)
-    connect(port:GetPropertyChangedSignal("Text"),function() draft.LMStudioPort=tonumber(port.Text) or 0 end)
-    local remember=button(form,"RememberSetupKeys","",UDim2.new(1,0,0,42),UDim2.fromOffset(0,104))
-    local storageNote=label(form,"Stored keys are plain text. Leave this off to keep keys in this session only.",UDim2.new(1,0,0,48),UDim2.fromOffset(0,152),12,C.MUTED)
-    local noKey=label(form,"This provider does not require an API key.\nContinue to choose a model.",UDim2.new(1,0,0,80),UDim2.new(),16,C.TEXT)
-    local function updateRemember() remember.Text=(draft.SaveAPIKeys and "✓ " or "○ ").."Remember API keys on this device" end
-    connect(remember.Activated,function() draft.SaveAPIKeys=not draft.SaveAPIKeys; updateRemember() end)
     refreshConnection=function()
-        updating=true
+        S.closeMenus()
+        for _,child in ipairs(connectionScroll:GetChildren()) do if child:IsA("GuiObject") then child:Destroy() end end
+        rememberSet=nil
         local custom,localServer=provider.id=="custom",provider.id=="lmstudio"
         local needsKey=not provider.noKey or custom
-        endpointLabel.Visible=custom; endpoint.Visible=custom; pathLabel.Visible=custom; path.Visible=custom
-        portLabel.Visible=localServer; port.Visible=localServer
-        keyLabel.Visible=needsKey; key.Visible=needsKey; reveal.Visible=needsKey; remember.Visible=needsKey; storageNote.Visible=needsKey
-        noKey.Visible=not needsKey and not localServer
-        local y=custom and 184 or 0
-        keyLabel.Text=custom and "API key (optional)" or "API key"
-        keyLabel.Position=UDim2.fromOffset(0,y); key.Position=UDim2.fromOffset(0,y+28); reveal.Position=UDim2.new(1,-74,0,y+28)
-        remember.Position=UDim2.fromOffset(0,y+92); storageNote.Position=UDim2.fromOffset(0,y+144)
-        form.Size=UDim2.new(form.Size.X.Scale,form.Size.X.Offset,0,custom and 382 or 220)
-        local saved=KEY_MAP[provider.id] and draft[KEY_MAP[provider.id]] or ""
-        key.Text=saved:match("^YOUR_") and "" or saved
-        revealed=false; maskKey(); updateRemember(); updating=false
-        guideText.Text=custom and "Use an OpenAI-compatible endpoint. A server root, /v1 base URL, or full chat-completions URL works.\n\nNo API key? Leave it empty.\n\nThe next step fetches available models. You can also enter an ID manually."
-            or localServer and "Start the local server in LM Studio and load a model.\n\nUse its listening port here. The next step fetches /v1/models.\n\nThinking is requested off for every model."
-            or provider.noKey and "No account key is needed. Service availability depends on the provider.\n\nThinking is requested off for every model."
-            or "Get a key from:\n"..provider.signup.."\n\nYour key goes only to this provider.\n\nThinking is requested off for every model."
+        local G=S.group(connectionScroll,{name="ConnectionFields",title="Connection",order=1})
+        local function fieldRow(title,props)
+            local row=G.row({name=props.name.."Row",title=title})
+            local box=S.field(row,props)
+            return box
+        end
+        if custom then
+            local endpoint=fieldRow("Base URL or chat endpoint",{name="SetupCustomEndpoint",value=draft.CustomEndpoint,mono=true,
+                placeholder="https://your-server.example/v1",widthScale=0.6})
+            connect(endpoint:GetPropertyChangedSignal("Text"),function() draft.CustomEndpoint=Trim(endpoint.Text) end)
+            local path=fieldRow("Model-list path (optional)",{name="SetupCustomModelsEndpoint",value=draft.CustomModelsEndpoint,mono=true,
+                placeholder="Auto-detect /v1/models",widthScale=0.6})
+            connect(path:GetPropertyChangedSignal("Text"),function() draft.CustomModelsEndpoint=Trim(path.Text) end)
+        end
+        if localServer then
+            local port=fieldRow("LM Studio server port",{name="SetupLocalPort",value=tostring(draft.LMStudioPort),mono=true,placeholder="1234",
+                widthScale=0.3,onFocusLost=function(enter) if enter then goNext() end end})
+            connect(port:GetPropertyChangedSignal("Text"),function() draft.LMStudioPort=tonumber(port.Text) or 0 end)
+        end
+        if needsKey then
+            local key=fieldRow(custom and "API key (optional)" or provider.name.." API key",{name="SetupAPIKey",revealName="RevealAPIKey",
+                secret=true,value=keyValue(),placeholder=custom and "Leave empty for keyless servers" or "Paste your API key",widthScale=0.6,
+                onFocusLost=function(enter) if enter then goNext() end end})
+            connect(key:GetPropertyChangedSignal("Text"),function() if KEY_MAP[provider.id] then draft[KEY_MAP[provider.id]]=Trim(key.Text) end end)
+            local remember=G.row({name="RememberSetupKeys",clickable=true,title="Remember API keys on this device",
+                subtitle="Stored as plain text. Leave off to keep keys in this session only.",wrap=true,right=100})
+            local set,flip=S.switch(remember,draft.SaveAPIKeys,function(value) draft.SaveAPIKeys=value end)
+            rememberSet=set
+            connect(remember.Activated,flip)
+        elseif not localServer then
+            G.frame:Destroy()
+            S.info(connectionScroll,{name="NoKeyNeeded",severity="success",title="No API key needed",order=1,
+                message=provider.name.." works without an account. Continue to choose a model."})
+        end
+        local guide=custom and "Use an OpenAI-compatible endpoint. A server root, /v1 base URL, or full chat-completions URL works. The next step fetches available models; you can also enter an ID manually."
+            or localServer and "Start the local server in LM Studio and load a model. Use its listening port here. The next step fetches /v1/models."
+            or provider.noKey and "No account key is needed. Service availability depends on the provider."
+            or "Get a key from "..provider.signup..". Your key goes only to this provider."
+        S.info(connectionScroll,{name="ConnectionGuide",severity="info",title="How to connect",order=2,
+            message=guide.." Thinking is requested off for every model."})
     end
     local function validateConnection()
         if provider.id=="custom" then
             local _,err=ResolveCustomEndpoints(draft.CustomEndpoint,draft.CustomModelsEndpoint)
             if err then return err end
         elseif provider.id=="lmstudio" then
-            local value=tonumber(port.Text)
+            local value=tonumber(draft.LMStudioPort)
             if not value or value<1 or value>65535 or value%1~=0 then return "Enter a whole-number server port from 1 to 65535." end
-            draft.LMStudioPort=value
         elseif not provider.noKey then
-            local value=Trim(draft[KEY_MAP[provider.id]])
+            local value=Trim(draft[KEY_MAP[provider.id]] or "")
             if value=="" or value:match("^YOUR_") then return "Add your "..provider.name.." API key before continuing." end
         end
         return nil
     end
 
-    -- Model: ID-based selection, remote discovery, manual fallback and stale-result guard.
-    local modelSearch=input(pages[3],"ModelSearch","","Search models",UDim2.new(1,-162,0,42),UDim2.new())
-    local refresh=button(pages[3],"RefreshDiscoveredModels","Refresh models",UDim2.fromOffset(150,42),UDim2.new(1,-150,0,0))
-    local modelStatus=label(pages[3],"",UDim2.new(1,0,0,32),UDim2.fromOffset(0,48),12,C.MUTED); modelStatus.Name="ModelDiscoveryStatus"
-    local modelList=scroll(pages[3],"ModelList",UDim2.new(1,0,1,-164),UDim2.fromOffset(0,90))
-    local layout=Instance.new("UIListLayout"); layout.Padding=UDim.new(0,8); layout.SortOrder=Enum.SortOrder.LayoutOrder; layout.Parent=modelList
-    local modelEmpty=label(pages[3],"No matching models. Enter an exact model ID below.",UDim2.new(1,-12,0,50),UDim2.fromOffset(0,90),14,C.MUTED)
-    label(pages[3],"Selected model / manual model ID",UDim2.new(1,0,0,22),UDim2.new(0,0,1,-66),12,C.MUTED)
-    local manual=input(pages[3],"ManualModelID",modelId,"Exact model ID",UDim2.new(1,0,0,40),UDim2.new(0,0,1,-40))
+    -- Step 3 · Model: filter, discovery status, suggestions or discovered models, and an exact ID.
+    local modelScroll=S.scrollPage(pages[3],"ModelForm")
+    local findGroup=S.group(modelScroll,{name="ModelFinder",order=1})
+    local findRow=findGroup.row({name="ModelSearchRow",title="Filter models"})
+    local modelSearch=S.field(findRow,{name="ModelSearch",placeholder="Search models",widthScale=0.6})
+    local statusRow,_,modelStatus=findGroup.row({name="ModelStatusRow",title="Model list",subtitle="",subtitleName="ModelDiscoveryStatus",right=170})
+    local refresh=S.button(statusRow,{name="RefreshDiscoveredModels",text="Refresh models",size=UDim2.fromOffset(150,28),
+        anchor=Vector2.new(1,0.5),position=UDim2.new(1,-14,0.5,0)})
+    local listGroup=S.group(modelScroll,{name="ModelList",title="Models",order=2})
+    local manualGroup=S.group(modelScroll,{name="ModelManual",title="Exact model ID",order=3,
+        footnote="Use any exact ID your provider accepts. Thinking is requested off for every model."})
+    local manualRow=manualGroup.row({name="ManualModelRow",title="Selected model / manual ID"})
+    local manual=S.field(manualRow,{name="ManualModelID",value=modelId,mono=true,placeholder="Exact model ID",widthScale=0.6,
+        onFocusLost=function(enter) if enter then goNext() end end})
     local modelRows={}
     local discoveryToken=0
     local function filterModels()
         local query=Trim(modelSearch.Text):lower(); local count=0
         for _,row in ipairs(modelRows) do
-            row.button.Visible=query=="" or (row.entry.id.." "..(row.entry.label or "")):lower():find(query,1,true)~=nil
-            if row.button.Visible then count=count+1 end
-            local selected=modelId==row.entry.id
-            row.button.BackgroundColor3=selected and C.SELECTED or C.CARD
-            row.stroke.Color=selected and C.ACCENT or C.BORDER
-            row.check.Text=selected and "Selected" or ""
+            row.row.Visible=query=="" or (row.entry.id.." "..(row.entry.label or "")):lower():find(query,1,true)~=nil
+            if row.row.Visible then count=count+1 end
+            row.mark(modelId==row.entry.id)
         end
-        modelEmpty.Visible=count==0
+        listGroup.setFootnote(count==0 and "No matching models. Enter an exact model ID below." or "")
     end
     renderModels=function(entries)
-        for _,row in ipairs(modelRows) do row.button:Destroy() end
+        listGroup.clear()
         modelRows={}
         for i,entry in ipairs(entries) do
-            local b,o=button(modelList,"Model_"..i,"",UDim2.new(1,-8,0,64),UDim2.new()); b.LayoutOrder=i
-            label(b,entry.label or entry.id,UDim2.new(1,-110,0,24),UDim2.fromOffset(14,8),14,C.TEXT,true)
-            label(b,entry.id,UDim2.new(1,-28,0,20),UDim2.fromOffset(14,35),12,C.MUTED)
-            local check=label(b,"",UDim2.fromOffset(76,24),UDim2.new(1,-90,0,8),11,C.ACCENT,true); check.TextXAlignment=Enum.TextXAlignment.Right
-            connect(b.Activated,function() manual.Text=entry.id end)
-            table.insert(modelRows,{button=b,stroke=o,check=check,entry=entry})
+            local row=listGroup.row({name="Model_"..i,clickable=true,title=entry.label or entry.id,subtitle=entry.id,monoSubtitle=true,right=40})
+            table.insert(modelRows,{row=row,entry=entry,mark=S.mark(row)})
+            connect(row.Activated,function() manual.Text=entry.id end)
         end
         filterModels()
     end
     connect(modelSearch:GetPropertyChangedSignal("Text"),filterModels)
-    connect(manual:GetPropertyChangedSignal("Text"),function() modelId=Trim(manual.Text); filterModels(); updateSummary() end)
+    connect(manual:GetPropertyChangedSignal("Text"),function() modelId=Trim(manual.Text); filterModels() end)
     local function discoverySignature()
         return provider.id..ModelDiscoverySignature(draft.CustomEndpoint,draft.CustomKey,draft.CustomModelsEndpoint)..tostring(draft.LMStudioPort)
     end
     refreshModels=function()
         local dynamic=provider.id=="custom" or provider.id=="lmstudio"
         refresh.Visible=dynamic
-        if not dynamic then renderModels(provider.models); modelStatus.Text=#provider.models.." suggestions · availability depends on your account"; return end
+        modelStatus.TextColor3=S.colors.secondary
+        if not dynamic then
+            renderModels(provider.models)
+            modelStatus.Text=#provider.models.." suggestions · availability depends on your account"
+            return
+        end
         discoveryToken=discoveryToken+1
         local token,signature=discoveryToken,discoverySignature()
-        modelStatus.Text="Fetching models… You can still enter an ID below."; modelStatus.TextColor3=C.MUTED
+        modelStatus.Text="Fetching models… You can still enter an ID below."
         refresh.Text="Refresh again"
         local base=provider.id=="lmstudio" and "http://localhost:"..draft.LMStudioPort.."/v1" or draft.CustomEndpoint
         local auth=provider.id=="custom" and draft.CustomKey or ""
@@ -2627,189 +3603,137 @@ local function RunSetupWizard()
             if closed or not Runtime.alive or token~=discoveryToken or signature~=discoverySignature() then return end
             refresh.Text="Refresh models"
             if entries then renderModels(entries); modelStatus.Text=#entries.." models found · select one or enter an ID"
-            else renderModels({}); modelStatus.Text=Truncate((err or "Model list unavailable.").." Enter an ID below.",90); modelStatus.TextColor3=C.RED end
+            else
+                renderModels({})
+                modelStatus.Text=Truncate((err or "Model list unavailable.").." Enter an ID below.",90); modelStatus.TextColor3=S.colors.error
+            end
         end)
     end
     connect(refresh.Activated,refreshModels)
 
-    -- Personality: presets and an editable prompt, with identity visible together.
-    local personalityScroll=scroll(pages[4],"PersonalityForm",UDim2.fromScale(1,1),UDim2.new())
-    local presetList=frame(personalityScroll,"PersonalityPresets",UDim2.new(0.32,-20,0,432)); presetList.BackgroundTransparency=1
-    local editor=frame(personalityScroll,"PersonalityEditor",UDim2.new(0.68,0,0,432),UDim2.new(0.32,0,0,0)); editor.BackgroundTransparency=1
-    label(editor,"Bot name",UDim2.new(0.48,0,0,22),UDim2.new(),13,C.TEXT,true)
-    label(editor,"Reply language",UDim2.new(0.48,0,0,22),UDim2.new(0.52,0,0,0),13,C.TEXT,true)
-    local botName=input(editor,"SetupBotName",draft.BotName,"AIBot",UDim2.new(0.48,0,0,42),UDim2.fromOffset(0,28))
-    local language=input(editor,"SetupLanguage",draft.Language,"Auto",UDim2.new(0.48,0,0,42),UDim2.new(0.52,0,0,28))
-    local promptTitle=label(editor,"System prompt",UDim2.new(1,0,0,24),UDim2.fromOffset(0,90),13,C.TEXT,true)
-    local prompt=input(editor,"SetupSystemPrompt",draft.SystemPrompt,"Write how the bot should speak and behave…",UDim2.new(1,0,0,238),UDim2.fromOffset(0,122),true)
-    label(editor,"Edit any preset to make it your own. Thinking stays off.",UDim2.new(1,0,0,38),UDim2.fromOffset(0,378),12,C.MUTED)
-    local presetRows={}
+    -- Step 4 · Personality: identity, presets and an editable prompt.
+    local personalityScroll=S.scrollPage(pages[4],"PersonalityForm")
+    local identity=S.group(personalityScroll,{name="Identity",title="Identity",order=1})
+    local botName=S.field(identity.row({name="BotNameRow",title="Bot name"}),{name="SetupBotName",value=draft.BotName,placeholder="AIBot",widthScale=0.5})
+    local language=S.field(identity.row({name="LanguageRow",title="Reply language"}),{name="SetupLanguage",value=draft.Language,placeholder="Auto",widthScale=0.5})
+    local presetGroup=S.group(personalityScroll,{name="Personality",title="Personality",order=2})
+    local promptGroup=S.group(personalityScroll,{name="PersonalityEditor",title="System prompt",order=3,
+        footnote="Edit any preset to make it your own. Thinking stays off."})
+    local prompt=S.field(promptGroup.row({name="PromptRow",title="",height=176}),{name="SetupSystemPrompt",value=draft.SystemPrompt,multiline=true,
+        top=12,placeholder="Write how the bot should speak and behave…"})
+    local picker=S.presetPicker(presetGroup,PERSONALITIES,function(preset)
+        if preset.prompt~="" then prompt.Text=preset.prompt else prompt:CaptureFocus() end
+    end)
     local function highlightPreset()
-        local matched=false
-        for _,row in ipairs(presetRows) do
-            local selected=row.entry.prompt~="" and row.entry.prompt==prompt.Text
-            if selected then matched=true end
-            row.button.BackgroundColor3=selected and C.SELECTED or C.CARD; row.stroke.Color=selected and C.ACCENT or C.BORDER
-        end
-        promptTitle.Text=matched and "System prompt" or "Custom system prompt"
-    end
-    for i,entry in ipairs(PERSONALITIES) do
-        local b,o=button(presetList,"Personality_"..entry.name,entry.name,UDim2.new(1,0,0,44),UDim2.fromOffset(0,(i-1)*54))
-        connect(b.Activated,function() if entry.prompt~="" then prompt.Text=entry.prompt else prompt:CaptureFocus() end; highlightPreset() end)
-        table.insert(presetRows,{button=b,stroke=o,entry=entry})
+        local matched
+        for _,preset in ipairs(PERSONALITIES) do if preset.prompt~="" and preset.prompt==prompt.Text then matched=preset end end
+        picker.paint(matched and matched.name or "Custom")
     end
     connect(prompt:GetPropertyChangedSignal("Text"),highlightPreset)
     highlightPreset()
 
-    -- A native adapter lets the optional voice step share the panel's controller.
+    -- Step 5 · Voice: the panel's voice controller rendered with this skin's rows.
+    local voiceControls
     do
-        local voiceScroll=scroll(pages[5],"SetupVoiceForm",UDim2.fromScale(1,1),UDim2.new())
-        local stack=frame(voiceScroll,"SetupVoiceControls",UDim2.new(1,-8,0,0)); stack.BackgroundTransparency=1
-        stack.AutomaticSize=Enum.AutomaticSize.Y
-        local list=Instance.new("UIListLayout"); list.Padding=UDim.new(0,14); list.SortOrder=Enum.SortOrder.LayoutOrder; list.Parent=stack
-        local ui={}; local order=0
-        local function control(options,height)
-            order=order+1
-            local holder=frame(stack,"SetupVoice_"..options.name,UDim2.new(1,0,0,height))
-            holder.BackgroundTransparency=1; holder.LayoutOrder=order
-            return holder
+        local voiceScroll=S.scrollPage(pages[5],"SetupVoiceForm")
+        local ui,group,order={},nil,0
+        local function current()
+            if not group then order=order+1; group=S.group(voiceScroll,{order=order}) end
+            return group
         end
         function ui:CreateSection(options)
-            local holder=control(options,32)
-            label(holder,options.name,UDim2.new(1,0,1,0),nil,16,C.ACCENT,true)
+            order=order+1
+            group=S.group(voiceScroll,{name="SetupVoice_"..options.name,title=options.name,order=order})
         end
         function ui:CreateText(options)
-            local holder=control(options,0); holder.AutomaticSize=Enum.AutomaticSize.Y
-            local title=label(holder,options.name,UDim2.new(1,0,0,22),nil,13,C.TEXT,true)
-            local text=label(holder,options.text,UDim2.new(1,-8,0,0),UDim2.fromOffset(0,28),13,C.MUTED)
-            text.AutomaticSize=Enum.AutomaticSize.Y; text.TextYAlignment=Enum.TextYAlignment.Top
-            return {SetTitle=function(_,value) title.Text=value end,Set=function(_,value) text.Text=value end}
+            local _,title,_,body=current().row({name="SetupVoice_"..options.name,title=options.name,body=options.text,auto=true})
+            return {SetTitle=function(_,value) title.Text=value end,Set=function(_,value) body.Text=value end}
         end
         function ui:CreateButton(options)
-            local holder=control(options,42)
-            local b=button(holder,holder.Name.."_Button",options.name,UDim2.fromScale(1,1))
-            connect(b.Activated,function() if not closed then options.callback() end end)
-            return b
+            local row=current().row({name="SetupVoice_"..options.name.."_Button",title=options.name,clickable=true,action=true})
+            connect(row.Activated,function() if not closed then options.callback() end end)
+            return row
         end
         function ui:CreateInput(options)
-            local holder=control(options,76)
-            label(holder,options.name,UDim2.new(1,0,0,22),nil,13,C.TEXT,true)
+            local row=current().row({name="SetupVoice_"..options.name,title=options.name})
             local secret=options.name:lower():find("key",1,true)~=nil
-            local box=input(holder,holder.Name.."_Input",options.value,options.placeholder,
-                UDim2.new(1,secret and -86 or 0,0,44),UDim2.fromOffset(0,28))
             local setting=false
-            if secret then
-                local mask=label(box,"",UDim2.new(1,-24,1,0),UDim2.fromOffset(12,0),14,C.TEXT); mask.ZIndex=box.ZIndex+1
-                local show=button(holder,holder.Name.."_Reveal","Show",UDim2.fromOffset(74,44),UDim2.new(1,-74,0,28))
-                local revealed=false
-                local function refreshMask()
-                    box.TextTransparency=not revealed and box.Text~="" and 1 or 0
-                    mask.Text=not revealed and string.rep("•",math.min(24,#box.Text)) or ""
-                    show.Text=revealed and "Hide" or "Show"
-                end
-                connect(show.Activated,function() revealed=not revealed; refreshMask() end)
-                connect(box:GetPropertyChangedSignal("Text"),refreshMask); refreshMask()
-            end
             -- Validate a helper URL after editing, rather than on each partial URL.
-            local changedSignal=options.name=="Voice helper URL" and box.FocusLost or box:GetPropertyChangedSignal("Text")
-            connect(changedSignal,function()
-                if not setting and not closed and options.callback then options.callback(box.Text) end
-            end)
+            local commitOnBlur=options.name=="Voice helper URL"
+            local box
+            box=S.field(row,{name="SetupVoice_"..options.name.."_Input",revealName="SetupVoice_"..options.name.."_Reveal",
+                value=options.value,placeholder=options.placeholder,secret=secret,widthScale=0.55,
+                onFocusLost=function()
+                    if commitOnBlur and not setting and not closed and options.callback then options.callback(box.Text) end
+                end})
+            if not commitOnBlur then
+                connect(box:GetPropertyChangedSignal("Text"),function()
+                    if not setting and not closed and options.callback then options.callback(box.Text) end
+                end)
+            end
             return {Set=function(_,value,skip)
                 setting=true; box.Text=tostring(value or ""); setting=false
                 if not skip and options.callback then options.callback(box.Text) end
             end}
         end
         function ui:CreateDropdown(options)
-            local holder=control(options,76)
-            label(holder,options.name,UDim2.new(1,0,0,22),nil,13,C.TEXT,true)
-            local selected=options.value
-            local b=button(holder,holder.Name.."_Picker",selected or "Choose / refresh choices",UDim2.new(1,0,0,44),UDim2.fromOffset(0,28))
-            b.TextTruncate=Enum.TextTruncate.AtEnd
-            local choices=scroll(holder,holder.Name.."_Choices",UDim2.new(1,0,0,0),UDim2.fromOffset(0,80)); choices.Visible=false
-            local rows={}; local values={}
-            local layout=Instance.new("UIListLayout"); layout.Padding=UDim.new(0,4); layout.SortOrder=Enum.SortOrder.LayoutOrder; layout.Parent=choices
-            local function expand(open)
-                choices.Visible=open and #values>0
-                local height=math.min(180,#values*40)
-                choices.Size=UDim2.new(1,0,0,height); holder.Size=UDim2.new(1,0,0,choices.Visible and 84+height or 76)
-            end
-            local handle={}
-            function handle:Set(value,skip)
-                selected=value; b.Text=value or "Choose / refresh choices"; expand(false)
-                if not skip and options.callback then options.callback(value) end
-            end
-            function handle:Refresh(entries)
-                for _,row in ipairs(rows) do row:Destroy() end
-                rows={}; values=entries
-                if not table.find(values,selected) then selected=nil; b.Text="Choose / refresh choices" end
-                for i,value in ipairs(values) do
-                    local row=button(choices,holder.Name.."_Option_"..value,value,UDim2.new(1,-8,0,36)); row.LayoutOrder=i
-                    row.TextTruncate=Enum.TextTruncate.AtEnd
-                    connect(row.Activated,function() if not closed then handle:Set(value) end end)
-                    table.insert(rows,row)
-                end
-                expand(false)
-            end
-            handle:Refresh(options.options or {}); if options.value then handle:Set(options.value,true) end
-            connect(b.Activated,function() expand(not choices.Visible) end)
-            return handle
+            local G=current()
+            local row=G.row({name="SetupVoice_"..options.name,title=options.name})
+            local handle
+            handle=S.popup(row,{name="SetupVoice_"..options.name.."_Picker",options=options.options or {},value=options.value,
+                placeholder="Choose / refresh choices",widthScale=0.55,lift={row,G.frame},
+                optionName=function(value) return "SetupVoice_"..options.name.."_Option_"..value end,
+                onChange=function(value) if not closed and options.callback then options.callback(value) end end})
+            local result={}
+            function result:Set(value,skip) handle.Set(value); if not skip and options.callback then options.callback(value) end end
+            function result:Refresh(values) handle.Refresh(values) end
+            return result
         end
         function ui:CreateToggle(options)
-            local holder=control(options,options.description and 98 or 42)
-            local value=options.value
-            local b=button(holder,holder.Name.."_Toggle","",UDim2.new(1,0,0,42))
-            b.TextSize=13
-            if options.description then label(holder,options.description,UDim2.new(1,-8,0,48),UDim2.fromOffset(0,48),12,C.MUTED) end
-            local handle={}
-            function handle:Set(nextValue,skip)
-                value=nextValue; b.Text=(value and "✓ " or "○ ")..options.name
-                b.BackgroundColor3=value and C.SELECTED or C.CARD
-                if not skip and options.callback then options.callback(value) end
-            end
-            handle:Set(value,true)
-            connect(b.Activated,function() if not closed then handle:Set(not value) end end)
-            return handle
+            local row=current().row({name="SetupVoice_"..options.name.."_Toggle",title=options.name,subtitle=options.description,
+                wrap=options.description~=nil,clickable=true,right=100})
+            local set,flip=S.switch(row,options.value,function(value) if options.callback then options.callback(value) end end)
+            connect(row.Activated,function() if not closed then flip() end end)
+            return {Set=function(_,value,skip) set(value,skip) end}
         end
         function ui:CreateSlider(options)
-            return ui:CreateInput({name=options.name.." ("..options.range[1].."–"..options.range[2]..")",value=tostring(options.value),placeholder="Volume percentage",callback=function(value)
-                local amount=tonumber(value)
-                if amount then options.callback(math.clamp(amount,options.range[1],options.range[2])) end
-            end})
+            return ui:CreateInput({name=options.name.." ("..options.range[1].."–"..options.range[2]..")",value=tostring(options.value),
+                placeholder="Volume percentage",callback=function(value)
+                    local amount=tonumber(value)
+                    if amount then options.callback(math.clamp(amount,options.range[1],options.range[2])) end
+                end})
         end
-        voiceControls=BuildVoiceOutputControls(ui,draft,{active=function() return not closed end,save=updateSummary,onKeyStorage=updateRemember})
+        voiceControls=BuildVoiceOutputControls(ui,draft,{platform=DEVICE_PLATFORM,active=function() return not closed end,
+            save=updateContinue,onKeyStorage=updateRemember})
     end
 
-    local titles={"Choose your provider","Connect your provider","Choose a model","Give your bot a personality","Set up voice output"}
-    local descriptions={"Pick a service, a local server, or your own endpoint.","Add the connection details for your selected provider.","Select a model from the list or paste its exact ID.","Start from a personality preset, then adjust the prompt and identity.","Optional: pair the helper and choose a speech provider, model and voice, or start with text only."}
+    -- Navigation.
+    local titles={"Choose your provider","Connect "..provider.name,"Choose a model","Give your bot a personality","Set up voice output"}
+    local descriptions={"Pick a service, a local server, or your own endpoint.","Add the connection details for your selected provider.",
+        "Select a model from the list or enter its exact ID.","Start from a personality preset, then adjust the prompt and identity.",
+        "Optional: pair the helper and choose a speech provider, model and voice, or start with text only."}
     showStep=function(value)
-        step=value; errorLabel.Text=""
+        step=value; S.setError("")
+        S.closeMenus()
         for i,page in ipairs(pages) do page.Visible=i==step end
-        for i,row in ipairs(navButtons) do
-            row.button.BackgroundColor3=i==step and C.SELECTED or C.BG
-            row.button.TextColor3=i==step and C.ACCENT or i<=completed and C.TEXT or C.MUTED
-            row.stroke.Transparency=i==step and 0 or 1
-        end
-        heading.Text=titles[step]; subtitle.Text=descriptions[step]
-        nextButton.Text="Continue"; back.Visible=step>1
+        titles[2]="Connect "..provider.name
+        S.setHeader(titles[step],descriptions[step])
+        S.setNav(step,completed)
+        S.showSearch(step==1)
+        S.backButton.Visible=step>1
         if step==2 then refreshConnection() end
         if step==3 then manual.Text=modelId; renderModels(provider.models); refreshModels() end
         if step==5 then voiceControls.refresh() end
-        updateSummary()
+        updateContinue()
+        S.enter(pages[step])
     end
-    for i,name in ipairs({"Provider","Connection","Model","Personality","Voice Output"}) do
-        local b,o=button(nav,"SetupNav_"..i,i.."  "..name,UDim2.new(0.2,-6,1,0),UDim2.new((i-1)*0.2,0,0,0))
-        table.insert(navButtons,{button=b,stroke=o})
-        connect(b.Activated,function() if i<=completed then showStep(i) end end)
-    end
-    connect(back.Activated,function() if step>1 then showStep(step-1) end end)
-    connect(nextButton.Activated,function()
+    goNext=function()
         if closed then return end
         local err=step>=2 and validateConnection() or nil
         if step>=3 and Trim(modelId)=="" then err="Select a model or enter an exact model ID." end
         if step>=4 and Trim(prompt.Text)=="" then err="Write a system prompt or select a personality preset." end
         if step==5 and draft.TTSEnabled then err=Speech.validateSettings(draft) or err end
-        if err then errorLabel.Text=err; return end
+        if err then S.setError(err); return end
         if step<5 then completed=math.max(completed,step+1); showStep(step+1); return end
         local changed=Cfg.Provider~=provider.id or Cfg.Model~=modelId
         Cfg.Provider=provider.id; Cfg.Model=modelId; Cfg.GeminiModel=modelId
@@ -2823,36 +3747,43 @@ local function RunSetupWizard()
         Cfg.SetupComplete=true; NormalizeCfg()
         if changed then ClearMemory() end
         SaveCfg(); finish(false)
-    end)
+    end
+    connect(S.backButton.Activated,function() if step>1 then showStep(step-1) end end)
+    connect(S.continueButton.Activated,goNext)
+
+    -- Drag by the title bar / toolbar.
+    if UserInputService then
+        local dragging,dragStart,origin
+        connect(S.drag.InputBegan,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+                dragging,dragStart,origin=true,input.Position,S.root.Position
+            end
+        end)
+        connect(UserInputService.InputEnded,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
+        end)
+        connect(UserInputService.InputChanged,function(input)
+            if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+                local delta=input.Position-dragStart
+                S.root.Position=UDim2.new(origin.X.Scale,origin.X.Offset+delta.X,origin.Y.Scale,origin.Y.Offset+delta.Y)
+            end
+        end)
+    end
     local function fit()
         local viewport=gui.AbsoluteSize
-        local width=math.max(420,math.min(1000,viewport.X-32))
-        local height=math.max(540,math.min(720,viewport.Y-32))
-        card.Size=UDim2.fromOffset(width,height)
-        scale.Scale=math.min(1,(viewport.X-16)/width,(viewport.Y-16)/height)
+        local width=math.max(420,math.min(S.maxW,viewport.X-32))
+        local height=math.max(520,math.min(S.maxH,viewport.Y-32))
         local compact=width<740
-        layoutProviderPage(width-48)
-        form.Size=UDim2.new(compact and 1 or 0.65,compact and -8 or -24,0,form.Size.Y.Offset)
-        guide.Visible=not compact
-        if compact then
-            presetList.Size=UDim2.new(1,-8,0,216)
-            for i,row in ipairs(presetRows) do
-                row.button.Size=UDim2.new(0.5,-6,0,44)
-                row.button.Position=UDim2.new((i-1)%2*0.5,0,0,math.floor((i-1)/2)*54)
-            end
-            editor.Size=UDim2.new(1,-8,0,432); editor.Position=UDim2.fromOffset(0,236)
-            summary.Visible=false
-        else
-            presetList.Size=UDim2.new(0.32,-20,0,432)
-            for i,row in ipairs(presetRows) do row.button.Size=UDim2.new(1,0,0,44); row.button.Position=UDim2.fromOffset(0,(i-1)*54) end
-            editor.Size=UDim2.new(0.68,0,0,432); editor.Position=UDim2.new(0.32,0,0,0)
-            summary.Visible=true
-        end
-        for i,row in ipairs(navButtons) do row.button.Text=compact and tostring(i).."  "..({"Service","Connect","Model","Profile","Voice"})[i] or tostring(i).."  "..({"Provider","Connection","Model","Personality","Voice Output"})[i]; row.button.TextSize=compact and 12 or 14 end
+        S.fit(width,height,compact)
+        picker.fit(compact)
+        S.scale.Scale=math.min(1,(viewport.X-16)/width,(viewport.Y-16)/height)
     end
     connect(gui:GetPropertyChangedSignal("AbsoluteSize"),fit)
-    refreshConnection(); selectProvider(provider); filterProviders(); showStep(1); fit()
-    task.delay(0.1,revealSelected)
+    selectProvider(provider); filterProviders(); showStep(1); fit()
+    -- Open: settle in from slightly smaller.
+    local target=S.scale.Scale
+    S.scale.Scale=target*0.96
+    K.tween(S.scale,0.35,{Scale=target},Enum.EasingStyle.Back)
     done.Event:Wait()
     gui:Destroy(); done:Destroy()
 end
@@ -2895,41 +3826,301 @@ PanelWindow = Win
 table.insert(Runtime.cleanups, function() Win:Unload(); PanelWindow=nil end)
 Runtime.ready = true
 
--- ─── General Tab ───
-local TabGeneral = Win:CreateTab({
-    name = "General",
-})
+-- Tabs run from everyday use to rarely touched settings:
+-- Home · Personality · Replies · Provider · Voice · Avatar Vision · Emotes · Settings.
+local function ProviderName(id)
+    for _, p in ipairs(PROVIDERS) do if p.id == id then return p.name end end
+    return id
+end
+local function SessionSummary()
+    local stats = Runtime.stats
+    return string.format("%s · %s\n%s · Queue %d/%d · Replies %d · Errors %d",
+        ProviderName(Cfg.Provider), Cfg.Model, Cfg.Enabled and "Replying" or "Paused",
+        #MsgQueue, Cfg.QueueLimit, stats.replies, stats.errors)
+end
 
-TabGeneral:CreateSection({ name = "Bot Status" })
-TabGeneral:CreateToggle({ name="Enable AI Chat Bot", value=Cfg.Enabled, callback=function(v) SetEnabled(v); SaveCfg() end, forgetState=true})
-TabGeneral:CreateToggle({ name="Show Status Billboard", value=Cfg.ShowBillboard, callback=function(v) Cfg.ShowBillboard=v; UpdateBillboard(); SaveCfg() end, forgetState=true})
+-- ─── Home: on/off, status, quick actions, private chat ───
+local TabHome = Win:CreateTab({ name = "Home" })
+TabHome:CreateSection({ name = "Bot" })
+local statusText
+TabHome:CreateToggle({ name="Enable AI Chat Bot", value=Cfg.Enabled, callback=function(v)
+    SetEnabled(v); SaveCfg()
+    if statusText then statusText:Set(SessionSummary()) end
+end, forgetState=true})
+statusText = TabHome:CreateText({ name="Status", text=SessionSummary() })
+TabHome:CreateButton({ name="Refresh Status", callback=function()
+    local stats = Runtime.stats
+    statusText:Set(SessionSummary())
+    SafeNotify({Title="Session status", Content=string.format(
+        "Provider: %s\nModel: %s\nQueue: %d / %d | Busy: %s\nRequests: %d | Replies: %d | Errors: %d\nSkipped: %d | Last response: %.1fs\nVision calls: %d | Cache hits: %d | Tool calls: %d\nLast error: %s",
+        Cfg.Provider, Cfg.Model, #MsgQueue, Cfg.QueueLimit, tostring(ProcessingMsg), stats.requests, stats.replies,
+        stats.errors, stats.dropped, stats.latency, stats.visionRequests, stats.visionCacheHits, stats.avatarToolCalls, stats.lastError), Duration=15})
+end})
 
-TabGeneral:CreateSection({ name = "Chat Settings" })
-TabGeneral:CreateInput({ name="Chat Prefix", placeholder="e.g. [AI]: ", value=Cfg.ChatPrefix, callback=function(v) Cfg.ChatPrefix=v; SaveCfg() end, forgetState=true})
-TabGeneral:CreateInput({ name="AI Language (Auto, Spanish, etc)", placeholder="e.g. Auto, Pirate", value=Cfg.Language or "Auto", callback=function(v) Cfg.Language=(v~="") and v or "Auto"; SaveCfg() end, forgetState=true})
-TabGeneral:CreateToggle({ name="Respond to Everyone (ignore proximity)", value=Cfg.RespondToAll, callback=function(v) Cfg.RespondToAll=v; SaveCfg() end, forgetState=true})
-TabGeneral:CreateToggle({ name="Respond to Name Only (Mention Mode)", value=Cfg.RespondToNameOnly, callback=function(v) Cfg.RespondToNameOnly=v; SaveCfg() end, forgetState=true})
-TabGeneral:CreateToggle({ name="Local Preview (only visible to you)", value=Cfg.WhisperMode, callback=function(v) Cfg.WhisperMode=v; SaveCfg() end, forgetState=true})
-
-TabGeneral:CreateSection({ name = "Quick Actions" })
-TabGeneral:CreateButton({ name="Test AI (sends Hello to chat)", callback=function()
+TabHome:CreateSection({ name = "Quick actions" })
+TabHome:CreateButton({ name="Say hello in chat (public test)", callback=function()
     QueueManual({text="Hello there!", name=LP.Name, userId=LP.UserId, callback=function(result, err)
-        if not result then SafeNotify({Title="Test Failed", Content=err}) end
+        if not result then SafeNotify({Title="Test failed", Content=err}) end
     end})
 end })
+TabHome:CreateButton({ name="Introduce the bot in chat", callback=function() task.spawn(DoIntroduce) end })
+TabHome:CreateButton({ name="Cancel Pending Replies", callback=function()
+    InvalidatePending(); UpdateBillboard(Cfg.Enabled and "ready" or "paused")
+    statusText:Set(SessionSummary())
+    SafeNotify({Title="Queue cleared", Content="Pending replies have been cancelled."})
+end})
 
-TabGeneral:CreateButton({ name="Introduce AI in Chat", callback=function() task.spawn(DoIntroduce) end })
-TabGeneral:CreateButton({ name="Export Chat Log", callback=function()
-    local ok, fn = ExportChatLog()
-    SafeNotify({Title=ok and "Log Exported" or "Export Failed", Content=ok and ("Saved to "..fn) or fn})
+TabHome:CreateSection({ name = "Private chat" })
+TabHome:CreateText({ name="About private chat", text="Talk to the bot without posting in game chat. Private messages use their own memory and never appear in public replies." })
+local uiChatInput = ""
+TabHome:CreateInput({ name="Your message", placeholder="Say something...", callback=function(v) uiChatInput=v end, forgetState=true})
+TabHome:CreateButton({ name="Send privately", callback=function()
+    local msg = uiChatInput
+    if msg=="" then SafeNotify({Title="Empty", Content="Type something first.", Duration=2}); return end
+    SafeNotify({Title="Generating reply...", Content=msg:sub(1,60), Duration=3})
+    QueueManual({text=msg, name=LP.Name, userId=LP.UserId, private=true, callback=function(result, err)
+        SafeNotify({Title=result and "AI says:" or "No response", Content=result or err, Duration=12})
+    end})
+end })
+TabHome:CreateButton({name="Clear private conversation", callback=function()
+    InvalidatePending(); table.clear(PrivateHistory); SaveMemory()
+    SafeNotify({Title="Private memory cleared", Content="Your public conversation is still available."})
+end})
+
+-- ─── Personality: identity, prompt, reply style ───
+local TabPersonality = Win:CreateTab({ name = "Personality" })
+TabPersonality:CreateSection({ name = "Identity" })
+TabPersonality:CreateInput({
+    name="Bot Name", placeholder="AIBot", value=Cfg.BotName,
+    callback=function(v) Cfg.BotName=Trim(v)~="" and Trim(v) or "AIBot"; SaveCfg(); UpdateBillboard() end, forgetState=true})
+TabPersonality:CreateInput({ name="Reply language", placeholder="Auto, Spanish, Pirate...", value=Cfg.Language or "Auto",
+    callback=function(v) Cfg.Language=Trim(v)~="" and Trim(v) or "Auto"; SaveCfg() end, forgetState=true})
+TabPersonality:CreateInput({ name="Chat prefix", placeholder="e.g. [AI]: ", value=Cfg.ChatPrefix,
+    callback=function(v) Cfg.ChatPrefix=v; SaveCfg() end, forgetState=true})
+
+TabPersonality:CreateSection({ name = "Personality" })
+local PRESET_OPTIONS, PRESET_BY_LABEL = {}, {}
+for _, p in ipairs(PERSONALITIES) do
+    local label = p.emoji.." "..p.name
+    table.insert(PRESET_OPTIONS, label); PRESET_BY_LABEL[label] = p
+end
+-- The dropdown shows the preset that matches the saved prompt, or Custom.
+local function CurrentPresetLabel()
+    for _, p in ipairs(PERSONALITIES) do
+        if p.prompt ~= "" and p.prompt == Cfg.SystemPrompt then return p.emoji.." "..p.name end
+    end
+    return PRESET_OPTIONS[#PRESET_OPTIONS]
+end
+local presetDropdown, promptInput
+presetDropdown = TabPersonality:CreateDropdown({
+    name="Personality preset", options=PRESET_OPTIONS, value=CurrentPresetLabel(), multiSelect=false,
+    callback=function(label)
+        local preset = PRESET_BY_LABEL[label]
+        if not preset then return end
+        if preset.prompt == "" then
+            SafeNotify({Title="Custom personality", Content="Write your own prompt in System prompt below."}); return
+        end
+        Cfg.SystemPrompt = preset.prompt; SaveCfg()
+        if promptInput then promptInput:Set(preset.prompt, true) end
+        SafeNotify({Title="Personality set", Content=preset.name})
+    end, forgetState=true})
+promptInput = TabPersonality:CreateInput({
+    name="System prompt", placeholder="Describe how the bot talks and behaves...", value=Cfg.SystemPrompt,
+    callback=function(v)
+        if Trim(v) == "" then return end
+        Cfg.SystemPrompt=v; SaveCfg()
+        presetDropdown:Set(CurrentPresetLabel(), true)
+    end, forgetState=true})
+TabPersonality:CreateButton({ name="Reset to Friendly Gamer", callback=function()
+    Cfg.SystemPrompt=PERSONALITIES[1].prompt; SaveCfg()
+    promptInput:Set(Cfg.SystemPrompt, true); presetDropdown:Set(CurrentPresetLabel(), true)
+    SafeNotify({Title="Reset done", Content="Prompt restored to Friendly Gamer."})
 end })
 
--- ─── Voice Output ───
-BuildVoiceOutputControls(Win:CreateTab({name="Voice Output"}),Cfg,{save=SaveCfg})
+TabPersonality:CreateSection({ name = "Reply style" })
+local lengthNames = {}
+for _, lm in ipairs(LENGTH_MODES) do table.insert(lengthNames, lm.name) end
+TabPersonality:CreateDropdown({
+    name="Reply length", options=lengthNames,
+    value=LENGTH_MODES[Cfg.LengthMode] and LENGTH_MODES[Cfg.LengthMode].name or "Normal", multiSelect=false,
+    callback=function(val)
+        for i, lm in ipairs(LENGTH_MODES) do
+            if lm.name == val then Cfg.LengthMode = i; Cfg.MaxTokens = lm.maxTok; SaveCfg(); break end
+        end
+    end, forgetState=true})
+TabPersonality:CreateToggle({ name="Brief pause before replying", value=Cfg.ThinkDelay, callback=function(v) Cfg.ThinkDelay=v; SaveCfg() end, forgetState=true})
+TabPersonality:CreateSlider({ name="Creativity (1 precise – 20 wild)", increment=1, range={1,20}, value=math.round(Cfg.Temperature*10), callback=function(v) Cfg.Temperature=v/10; SaveCfg() end, forgetState=true})
+TabPersonality:CreateSlider({ name="Max reply tokens", increment=10, range={40,500}, value=Cfg.MaxTokens, callback=function(v) Cfg.MaxTokens=v; SaveCfg() end, forgetState=true})
+TabPersonality:CreateText({name="Model thinking: off", text="Every request forces thinking off, including custom models. Provider errors and reported reasoning are rejected. The reply pause changes timing only."})
 
--- ─── Avatar Vision Tab ───
+-- ─── Replies: who the bot answers, greetings, player lists ───
+local TabReplies = Win:CreateTab({ name = "Replies" })
+TabReplies:CreateSection({ name = "Who it replies to" })
+TabReplies:CreateToggle({ name="Reply to everyone (ignore distance)", value=Cfg.RespondToAll, callback=function(v) Cfg.RespondToAll=v; SaveCfg() end, forgetState=true})
+TabReplies:CreateToggle({ name="Only reply when named", value=Cfg.RespondToNameOnly, callback=function(v) Cfg.RespondToNameOnly=v; SaveCfg() end, forgetState=true})
+TabReplies:CreateSlider({ name="Reply radius (studs)", increment=5, range={5,300}, value=Cfg.ProximityRadius, callback=function(v) Cfg.ProximityRadius=v; SaveCfg() end, forgetState=true})
+TabReplies:CreateSlider({ name="Cooldown per player (seconds)", increment=1, range={1,60}, value=Cfg.Cooldown, callback=function(v) Cfg.Cooldown=v; SaveCfg() end, forgetState=true})
+TabReplies:CreateToggle({ name="Local Preview (only visible to you)", value=Cfg.WhisperMode, callback=function(v) Cfg.WhisperMode=v; SaveCfg() end, forgetState=true})
+
+TabReplies:CreateSection({ name = "Greetings" })
+TabReplies:CreateToggle({ name="Greet nearby players", value=Cfg.AutoGreet, callback=function(v) Cfg.AutoGreet=v; SaveCfg() end, forgetState=true})
+TabReplies:CreateSlider({ name="Greet cooldown per player (seconds)", increment=30, range={30,600}, value=Cfg.AutoGreetCooldown, callback=function(v) Cfg.AutoGreetCooldown=v; SaveCfg() end, forgetState=true})
+
+TabReplies:CreateSection({ name = "Player lists" })
+local listsText
+local function ListsSummary()
+    return "Whitelist: "..(#Cfg.Whitelist > 0 and table.concat(Cfg.Whitelist, ", ") or "empty (anyone allowed)")
+        .."\nBlacklist: "..(#Cfg.Blacklist > 0 and table.concat(Cfg.Blacklist, ", ") or "empty")
+        .."\n\nWith a whitelist, the bot only replies to those players. Blacklisted players are always ignored."
+end
+-- Names are stored like saved settings: trimmed, without @, lowercase and unique.
+local function CleanName(v) return (Trim(v):gsub("^@", ""):lower()) end
+local function AddToList(list, v, title)
+    local name = CleanName(v)
+    if name == "" then return end
+    if not table.find(list, name) then table.insert(list, name) end
+    SaveCfg(); listsText:Set(ListsSummary())
+    SafeNotify({Title=title, Content=name})
+end
+listsText = TabReplies:CreateText({ name="Current lists", text=ListsSummary() })
+TabReplies:CreateInput({ name="Add to whitelist", placeholder="PlayerName", callback=function(v) AddToList(Cfg.Whitelist, v, "Whitelisted") end, forgetState=true})
+TabReplies:CreateInput({ name="Add to blacklist", placeholder="PlayerName", callback=function(v) AddToList(Cfg.Blacklist, v, "Blacklisted") end, forgetState=true})
+TabReplies:CreateInput({ name="Remove from lists", placeholder="PlayerName", callback=function(v)
+    local name = CleanName(v)
+    if name == "" then return end
+    for _, list in ipairs({Cfg.Whitelist, Cfg.Blacklist}) do
+        local index = table.find(list, name)
+        if index then table.remove(list, index) end
+    end
+    SaveCfg(); listsText:Set(ListsSummary())
+end, forgetState=true})
+TabReplies:CreateButton({ name="Clear whitelist", callback=function() Cfg.Whitelist={}; SaveCfg(); listsText:Set(ListsSummary()) end })
+TabReplies:CreateButton({ name="Clear blacklist", callback=function() Cfg.Blacklist={}; SaveCfg(); listsText:Set(ListsSummary()) end })
+
+-- ─── Provider: model, custom endpoint (custom only), API keys, switching ───
+local TabProvider = Win:CreateTab({ name = "Provider" })
+TabProvider:CreateSection({ name = "Connection" })
+local connectionText = TabProvider:CreateText({ name="Active connection", text="Provider: "..ProviderName(Cfg.Provider).."\nModel: "..Cfg.Model })
+TabProvider:CreateInput({name="Model ID", value=Cfg.Model, placeholder="Exact model ID from your provider", callback=function(value)
+    if SetModel(value) then
+        connectionText:Set("Provider: "..ProviderName(Cfg.Provider).."\nModel: "..Cfg.Model)
+        SafeNotify({Title="Model updated", Content=Cfg.Model})
+    end
+end, forgetState=true})
+TabProvider:CreateButton({name="Test Connection (private)", callback=function()
+    QueueManual({text="Reply with: Connection successful.", name=LP.Name, private=true, callback=function(result, err)
+        SafeNotify({Title=result and "Connection working" or "Connection failed", Content=result or err, Duration=8})
+    end})
+end})
+
+if Cfg.Provider == "custom" then
+    TabProvider:CreateSection({ name = "Custom endpoint" })
+    local customModelsDropdown,customModelStatus
+    local customDiscovery={busy=false,ids={},updating=false}
+    local function ClearCustomModelChoices()
+        customDiscovery.ids={}
+        if customModelsDropdown then
+            customDiscovery.updating=true
+            customModelsDropdown:Refresh({})
+            customModelStatus:Set("Fetch models after configuring your endpoint.")
+            customDiscovery.updating=false
+        end
+    end
+    TabProvider:CreateInput({name="Custom endpoint / base URL", value=Cfg.CustomEndpoint, callback=function(value)
+        value = Trim(value)
+        local urls,err=ResolveCustomEndpoints(value,Cfg.CustomModelsEndpoint)
+        if urls then Cfg.CustomEndpoint=value; ClearCustomModelChoices(); InvalidatePending(); SaveCfg()
+        else SafeNotify({Title="Invalid endpoint",Content=err}) end
+    end, forgetState=true})
+    TabProvider:CreateInput({name="Custom model-list URL / path (optional)",value=Cfg.CustomModelsEndpoint,
+        placeholder="Auto-detect, /v1/models, /models, or a full URL",callback=function(value)
+            value=Trim(value)
+            local urls,err=ResolveCustomEndpoints(Cfg.CustomEndpoint,value)
+            if urls then Cfg.CustomModelsEndpoint=value; ClearCustomModelChoices(); SaveCfg()
+            else SafeNotify({Title="Invalid model-list URL",Content=err}) end
+        end, forgetState=true})
+    TabProvider:CreateInput({name="Custom endpoint key (optional)", placeholder="Leave empty for a local server", callback=function(value)
+        Cfg.CustomKey=Trim(value); ClearCustomModelChoices(); InvalidatePending(); SaveCfg()
+    end, forgetState=true})
+    customModelsDropdown=TabProvider:CreateDropdown({name="Discovered custom models",options={},multiSelect=false,
+        description="Fetch models after configuring your endpoint.",callback=function(value)
+            if customDiscovery.updating or not customDiscovery.ids[value] then return end
+            SetModel(value)
+            connectionText:Set("Provider: "..ProviderName(Cfg.Provider).."\nModel: "..Cfg.Model)
+            SafeNotify({Title="Model selected",Content=Cfg.Model})
+        end, forgetState=true})
+    customModelStatus=TabProvider:CreateText({name="Custom model status",text="Fetch models after configuring the endpoint."})
+    TabProvider:CreateButton({name="Fetch / Refresh Custom Models",callback=function()
+        if customDiscovery.busy then return end
+        customDiscovery.busy=true
+        local endpoint,key,path=Cfg.CustomEndpoint,Cfg.CustomKey,Cfg.CustomModelsEndpoint
+        local signature=ModelDiscoverySignature(endpoint,key,path)
+        customModelStatus:Set("Loading available models...")
+        task.spawn(function()
+            local models,err=DiscoverModels(endpoint,key,path)
+            customDiscovery.busy=false
+            if not Runtime.alive then return end
+            if ModelDiscoverySignature(Cfg.CustomEndpoint,Cfg.CustomKey,Cfg.CustomModelsEndpoint)~=signature then return end
+            if not models then
+                customModelStatus:Set(err or "Model discovery failed. Enter a model ID manually.")
+                SafeNotify({Title="Model discovery failed",Content=err}); return
+            end
+            local values={}; customDiscovery.ids={}
+            for _,model in ipairs(models) do table.insert(values,model.id); customDiscovery.ids[model.id]=true end
+            customDiscovery.updating=true
+            customModelsDropdown:Refresh(values)
+            if customDiscovery.ids[Cfg.Model] then customModelsDropdown:Set(Cfg.Model,true) end
+            customModelStatus:Set(#models.." models found. Select one to use it.")
+            customDiscovery.updating=false
+            SafeNotify({Title="Models loaded",Content=#models.." models available from your custom endpoint."})
+        end)
+    end})
+end
+
+TabProvider:CreateSection({ name = "API keys" })
+TabProvider:CreateToggle({name="Remember API keys on this device", value=Cfg.SaveAPIKeys, callback=function(value)
+    Cfg.SaveAPIKeys=value
+    local ok, err = SaveCfg()
+    if not ok then SafeNotify({Title="Settings not saved", Content=err}) end
+end, forgetState=true})
+-- One picker replaces a separate key box per provider.
+local KEYED, KEYED_BY_NAME = {}, {}
+for _, p in ipairs(PROVIDERS) do
+    if KEY_MAP[p.id] and not p.noKey and p.id ~= "custom" then table.insert(KEYED, p.name); KEYED_BY_NAME[p.name] = p end
+end
+local function HasKey(p) local value = Cfg[KEY_MAP[p.id]] or ""; return value ~= "" and not value:match("^YOUR_") end
+local function KeysSummary()
+    local saved = {}
+    for _, name in ipairs(KEYED) do if HasKey(KEYED_BY_NAME[name]) then table.insert(saved, name) end end
+    return "Keys set: "..(#saved > 0 and table.concat(saved, ", ") or "none")
+        .."\nWhen remembering is on, keys are saved as plain text in the local configuration file. Otherwise they last for this session."
+end
+local keyTarget = KEYED_BY_NAME[ProviderName(Cfg.Provider)] or KEYED_BY_NAME[KEYED[1]]
+local keysText = TabProvider:CreateText({name="Key storage", text=KeysSummary()})
+TabProvider:CreateDropdown({name="Provider to update", options=KEYED, value=keyTarget and keyTarget.name, multiSelect=false,
+    callback=function(name) keyTarget = KEYED_BY_NAME[name] or keyTarget end, forgetState=true})
+TabProvider:CreateInput({name="API key for selected provider", placeholder="Paste the key, then press Enter", callback=function(v)
+    if not keyTarget or Trim(v) == "" then return end
+    Cfg[KEY_MAP[keyTarget.id]] = Trim(v); InvalidatePending(); SaveCfg()
+    keysText:Set(KeysSummary())
+    SafeNotify({Title="Key saved", Content=keyTarget.name..(Cfg.SaveAPIKeys and " · remembered on this device" or " · this session only")})
+end, forgetState=true})
+
+TabProvider:CreateSection({ name = "Switch provider" })
+TabProvider:CreateText({name="How to switch", text="To use a different provider, reopen setup. The bot unloads now; execute the script again to choose a new provider."})
+TabProvider:CreateButton({ name="Reopen setup on next run", callback=function()
+    Cfg.SetupComplete = false; SaveCfg()
+    SafeNotify({Title="Setup reset", Content="Execute the script again to open setup."})
+    Runtime.Stop()
+end })
+
+-- ─── Voice ───
+BuildVoiceOutputControls(Win:CreateTab({name="Voice"}),Cfg,{save=SaveCfg,platform=DEVICE_PLATFORM})
+
+-- ─── Avatar Vision ───
 local TabVision=Win:CreateTab({name="Avatar Vision"})
 TabVision:CreateSection({name="Vision routing"})
+TabVision:CreateText({name="How it works",text="Enable avatar vision first. With the custom toggle off, Pollinations or Gemini sends the avatar to your selected chat model. With it on, your separate vision model describes the avatar for your chat model. Enable tool mode to let the chat model request descriptions when needed; unsupported tools fall back to automatic descriptions. Thinking stays off."})
 TabVision:CreateToggle({name="Enable avatar vision",value=Cfg.GlobalVision,callback=function(value)
     Cfg.GlobalVision=value; ClearVisionCache(); InvalidatePending(); SaveCfg()
 end, forgetState=true})
@@ -2945,7 +4136,6 @@ TabVision:CreateButton({name="Check chat model tool support",callback=function()
         SafeNotify({Title=supported and "Avatar tools supported" or "Avatar tools not confirmed",Content=detail,Duration=10})
     end)
 end})
-TabVision:CreateText({name="How it works",text="Enable avatar vision first. With the custom toggle off, Pollinations or Gemini sends the avatar to your selected chat model. With it on, your separate vision model describes the avatar for your chat model. Enable tool mode to let the chat model request descriptions when needed; unsupported tools fall back to automatic descriptions. Thinking stays off."})
 TabVision:CreateSection({name="Custom vision connection"})
 local visionModelsDropdown,visionModelStatus
 local visionDiscovery={busy=false,ids={},updating=false,testBusy=false}
@@ -3012,6 +4202,7 @@ TabVision:CreateButton({name="Fetch / Refresh Vision Models",callback=function()
         SafeNotify({Title="Vision models loaded",Content=#models.." available models. Your chat model is unchanged."})
     end)
 end})
+TabVision:CreateSection({name="Test and cache"})
 TabVision:CreateButton({name="Test custom vision on my avatar",callback=function()
     if visionDiscovery.testBusy then return end
     local settings,err=GetCustomVisionSettings()
@@ -3036,293 +4227,64 @@ TabVision:CreateButton({name="Clear cached avatar descriptions",callback=functio
 end})
 TabVision:CreateText({name="Avatar input",text="Vision receives a static Roblox headshot. Model discovery can include text-only models, so select an image-capable model. Descriptions are cached for up to two minutes and refreshed when the thumbnail or connection changes."})
 
--- ─── Behavior Tab ───
-local TabBehavior = Win:CreateTab({
-    name = "Behavior",
-})
-
-TabBehavior:CreateSection({ name = "Response Timing & Length" })
-TabBehavior:CreateText({name="Model thinking: off", text="Every request forces thinking off, including custom models. Provider errors and reported reasoning are rejected. The reply pause changes timing only."})
-TabBehavior:CreateToggle({ name="Brief pause before replying", value=Cfg.ThinkDelay, callback=function(v) Cfg.ThinkDelay=v; SaveCfg() end, forgetState=true})
-local lengthNames = {}
-for _, lm in ipairs(LENGTH_MODES) do table.insert(lengthNames, lm.name) end
-TabBehavior:CreateDropdown({
-    name="Response Mode", options=lengthNames,
-    value=LENGTH_MODES[Cfg.LengthMode] and LENGTH_MODES[Cfg.LengthMode].name or "Normal",
-    multiSelect = false,
-    callback=function(val)
-        for i, lm in ipairs(LENGTH_MODES) do
-            if lm.name == val then Cfg.LengthMode = i; Cfg.MaxTokens = lm.maxTok; SaveCfg(); break end
-        end
-    end, forgetState=true})
-
-TabBehavior:CreateSection({ name = "Proximity Limits" })
-TabBehavior:CreateSlider({ name="Detection Radius", increment=5, range={5,300}, value=Cfg.ProximityRadius, callback=function(v) Cfg.ProximityRadius=v; SaveCfg() end, forgetState=true})
-TabBehavior:CreateSlider({ name="Response Cooldown (per player)", increment=1, range={1,60}, value=Cfg.Cooldown, callback=function(v) Cfg.Cooldown=v; SaveCfg() end, forgetState=true})
-
-TabBehavior:CreateSection({ name = "Auto-Greet" })
-TabBehavior:CreateToggle({ name="Auto-greet nearby players", value=Cfg.AutoGreet, callback=function(v) Cfg.AutoGreet=v; SaveCfg() end, forgetState=true})
-TabBehavior:CreateSlider({ name="Greet Cooldown per Player", increment=30, range={30,600}, value=Cfg.AutoGreetCooldown, callback=function(v) Cfg.AutoGreetCooldown=v; SaveCfg() end, forgetState=true})
-
-TabBehavior:CreateSection({ name = "Advanced Options" })
-TabBehavior:CreateSlider({ name="Max Response Tokens", increment=10, range={40,500}, value=Cfg.MaxTokens, callback=function(v) Cfg.MaxTokens=v; SaveCfg() end, forgetState=true})
-TabBehavior:CreateSlider({ name="Temperature (1=precise / 20=wild)", increment=1, range={1,20}, value=math.round(Cfg.Temperature*10), callback=function(v) Cfg.Temperature=v/10; SaveCfg() end, forgetState=true})
-TabBehavior:CreateButton({ name="Clear Conversation Memory", callback=function() ClearMemory(); SafeNotify({Title="Memory Cleared", Content="Conversation history wiped."}) end })
-
--- ─── Chat Tab ───
-local TabChat = Win:CreateTab({
-    name = "Chat with AI",
-})
-
-TabChat:CreateSection({ name = "Private Conversation" })
-TabChat:CreateText({ name="About", text="Chat with the AI privately. Messages are NOT sent to game chat. Uses separate memory so private messages stay out of public replies." })
-local uiChatInput = ""
-TabChat:CreateInput({ name="Your message", placeholder="Say something...", callback=function(v) uiChatInput=v end, forgetState=true})
-TabChat:CreateButton({ name="Send to AI (private)", callback=function()
-    local msg = uiChatInput
-    if msg=="" then SafeNotify({Title="Empty", Content="Type something first.", Duration=2}); return end
-    SafeNotify({Title="Generating reply...", Content=msg:sub(1,60), Duration=3})
-    QueueManual({text=msg, name=LP.Name, userId=LP.UserId, private=true, callback=function(result, err)
-        SafeNotify({Title=result and "AI says:" or "No Response", Content=result or err, Duration=12})
-    end})
-end })
-TabChat:CreateButton({name="Clear Private Conversation", callback=function()
-    InvalidatePending(); table.clear(PrivateHistory); SaveMemory()
-    SafeNotify({Title="Private memory cleared", Content="Your public conversation is still available."})
-end})
-
-
-
--- ─── Personality Tab ───
-local TabPersonality = Win:CreateTab({
-    name = "Personality",
-})
-
-TabPersonality:CreateSection({ name = "Presets" })
-local PRESET_OPTIONS = {}
-for _, p in ipairs(PERSONALITIES) do if p.name ~= "Custom" then table.insert(PRESET_OPTIONS, p.emoji.." "..p.name) end end
-TabPersonality:CreateDropdown({
-    name="Personality Preset", options=PRESET_OPTIONS, value=PRESET_OPTIONS[1],
-    multiSelect = false,
-    callback=function(val)
-        for _, p in ipairs(PERSONALITIES) do
-            if val:find(p.name) then Cfg.SystemPrompt = p.prompt; SaveCfg()
-                SafeNotify({Title="Personality Set", Content=p.name}); break
-            end
-        end
-    end, forgetState=true})
-
-TabPersonality:CreateSection({ name = "Custom Prompt" })
-TabPersonality:CreateInput({
-    name="System Prompt", placeholder="Write a custom personality...", value=Cfg.SystemPrompt,
-    callback=function(v) if v~="" then Cfg.SystemPrompt=v; SaveCfg() end end, forgetState=true})
-TabPersonality:CreateButton({ name="Reset to Friendly Gamer default", callback=function()
-    Cfg.SystemPrompt=PERSONALITIES[1].prompt; SaveCfg()
-    SafeNotify({Title="Reset Done", Content="Prompt restored to Friendly Gamer."})
-end })
-
-TabPersonality:CreateSection({ name = "Bot Identity" })
-TabPersonality:CreateInput({
-    name="Bot Name", placeholder=Cfg.BotName, value=Cfg.BotName,
-    callback=function(v) Cfg.BotName=Trim(v)~="" and Trim(v) or "AIBot"; SaveCfg(); UpdateBillboard() end, forgetState=true})
-
--- ─── Player Filter Tab ───
-local TabFilter = Win:CreateTab({
-    name = "Player Filter",
-})
-
-TabFilter:CreateSection({ name = "Whitelist (respond ONLY to these)" })
-TabFilter:CreateText({ name="Info", text="If whitelist has names, the bot ONLY responds to those players. Blacklisted players are always ignored." })
-TabFilter:CreateInput({
-    name="Add to Whitelist", placeholder="PlayerName",
-    callback=function(v) if Trim(v)~="" then table.insert(Cfg.Whitelist, v); SaveCfg(); SafeNotify({Title="Whitelisted", Content=v}) end end, forgetState=true})
-TabFilter:CreateButton({ name="Clear Whitelist", callback=function() Cfg.Whitelist={}; SaveCfg(); SafeNotify({Title="Cleared", Content="Whitelist emptied."}) end })
-
-TabFilter:CreateSection({ name = "Blacklist (ignore these players)" })
-TabFilter:CreateInput({
-    name="Add to Blacklist", placeholder="PlayerName",
-    callback=function(v) if Trim(v)~="" then table.insert(Cfg.Blacklist, v); SaveCfg(); SafeNotify({Title="Blacklisted", Content=v}) end end, forgetState=true})
-TabFilter:CreateButton({ name="Clear Blacklist", callback=function() Cfg.Blacklist={}; SaveCfg(); SafeNotify({Title="Cleared", Content="Blacklist emptied."}) end })
-
--- ─── Provider Tab ───
-local TabProvider = Win:CreateTab({
-    name = "Provider",
-})
-
-TabProvider:CreateSection({ name = "Current Provider" })
-local currentProvName = "Unknown"
-for _, p in ipairs(PROVIDERS) do if p.id == Cfg.Provider then currentProvName = p.name; break end end
-TabProvider:CreateText({ name="Active Configuration", text="Provider: "..currentProvName.."\nModel: "..Cfg.Model.."\n\nEdit the model below, or use Reset Setup for Next Run to change provider." })
-
-TabProvider:CreateInput({name="Model ID", value=Cfg.Model, placeholder="Exact model ID from your provider", callback=function(value)
-    if SetModel(value) then SafeNotify({Title="Model updated", Content=Cfg.Model}) end
-end, forgetState=true})
-local customModelsDropdown,customModelStatus
-local customDiscovery={busy=false,ids={},updating=false}
-local function ClearCustomModelChoices()
-    customDiscovery.ids={}
-    if customModelsDropdown then
-        customDiscovery.updating=true
-        customModelsDropdown:Refresh({})
-        customModelStatus:Set("Fetch models after configuring your endpoint.")
-        customDiscovery.updating=false
-    end
-end
-TabProvider:CreateInput({name="Custom endpoint / base URL", value=Cfg.CustomEndpoint, callback=function(value)
-    value = Trim(value)
-    local urls,err=ResolveCustomEndpoints(value,Cfg.CustomModelsEndpoint)
-    if urls then Cfg.CustomEndpoint=value; ClearCustomModelChoices(); InvalidatePending(); SaveCfg()
-    else SafeNotify({Title="Invalid endpoint",Content=err}) end
-end, forgetState=true})
-TabProvider:CreateInput({name="Custom model-list URL / path (optional)",value=Cfg.CustomModelsEndpoint,
-    placeholder="Auto-detect, /v1/models, /models, or a full URL",callback=function(value)
-        value=Trim(value)
-        local urls,err=ResolveCustomEndpoints(Cfg.CustomEndpoint,value)
-        if urls then Cfg.CustomModelsEndpoint=value; ClearCustomModelChoices(); SaveCfg()
-        else SafeNotify({Title="Invalid model-list URL",Content=err}) end
-    end, forgetState=true})
-TabProvider:CreateInput({name="Custom endpoint key (optional)", placeholder="Leave empty for a local server", callback=function(value)
-    Cfg.CustomKey=Trim(value); ClearCustomModelChoices(); InvalidatePending(); SaveCfg()
-end, forgetState=true})
-customModelsDropdown=TabProvider:CreateDropdown({name="Discovered custom models",options={},multiSelect=false,
-    description="Fetch models after configuring your endpoint.",callback=function(value)
-        if customDiscovery.updating or not customDiscovery.ids[value] then return end
-        if Cfg.Provider~="custom" then
-            SafeNotify({Title="Custom provider required",Content="Select Custom Proxy / Endpoint in setup to use this model."}); return
-        end
-        SetModel(value); SafeNotify({Title="Model selected",Content=Cfg.Model})
-    end, forgetState=true})
-customModelStatus=TabProvider:CreateText({name="Custom model status",text="Fetch models after configuring the endpoint."})
-TabProvider:CreateButton({name="Fetch / Refresh Custom Models",callback=function()
-    if customDiscovery.busy then return end
-    customDiscovery.busy=true
-    local endpoint,key,path=Cfg.CustomEndpoint,Cfg.CustomKey,Cfg.CustomModelsEndpoint
-    local signature=ModelDiscoverySignature(endpoint,key,path)
-    customModelStatus:Set("Loading available models...")
-    task.spawn(function()
-        local models,err=DiscoverModels(endpoint,key,path)
-        customDiscovery.busy=false
-        if not Runtime.alive then return end
-        if ModelDiscoverySignature(Cfg.CustomEndpoint,Cfg.CustomKey,Cfg.CustomModelsEndpoint)~=signature then return end
-        if not models then
-            customModelStatus:Set(err or "Model discovery failed. Enter a model ID manually.")
-            SafeNotify({Title="Model discovery failed",Content=err}); return
-        end
-        local values={}; customDiscovery.ids={}
-        for _,model in ipairs(models) do table.insert(values,model.id); customDiscovery.ids[model.id]=true end
-        customDiscovery.updating=true
-        customModelsDropdown:Refresh(values)
-        if customDiscovery.ids[Cfg.Model] then customModelsDropdown:Set(Cfg.Model,true) end
-        customModelStatus:Set(#models.." models found. Select one to use it.")
-        customDiscovery.updating=false
-        SafeNotify({Title="Models loaded",Content=#models.." models available from your custom endpoint."})
-    end)
-end})
-TabProvider:CreateButton({name="Test Connection (private)", callback=function()
-    QueueManual({text="Reply with: Connection successful.", name=LP.Name, private=true, callback=function(result, err)
-        SafeNotify({Title=result and "Connection working" or "Connection failed", Content=result or err, Duration=8})
-    end})
-end})
-TabProvider:CreateSection({ name = "API Keys" })
-TabProvider:CreateToggle({name="Remember API keys on this device", value=Cfg.SaveAPIKeys, callback=function(value)
-    Cfg.SaveAPIKeys=value
-    local ok, err = SaveCfg()
-    if not ok then SafeNotify({Title="Settings not saved", Content=err}) end
-end, forgetState=true})
-TabProvider:CreateText({name="Key storage", text="When enabled, keys are stored in the local configuration file as plain text. When disabled, keys stay in memory for this session."})
-local keyInputs = {
-    {"Pollinations", "PollinationsKey", "API key from enter.pollinations.ai"},
-    {"OpenRouter",   "OpenRouterKey",   "sk-or-v1-..."},
-    {"Google Gemini", "GeminiKey",      "AIzaSy-..."},
-    {"Cerebras",     "CerebrasKey",     "csk-..."},
-    {"Cohere",       "CohereKey",       "..."},
-    {"Mistral",      "MistralKey",      "..."},
-    {"ElectronHub",  "ElectronHubKey",  "ek-..."},
-    {"Zanity",       "ZanityKey",       "..."},
-    {"OpenCode Zen", "ZenKey",          "Get from opencode.ai/auth"},
-    {"Groq",         "GroqKey",         "gsk_..."},
-    {"SambaNova",    "SambaNovaKey",    "..."},
-    {"Together AI",  "TogetherKey",     "..."},
-    {"HuggingFace",  "HuggingFaceKey",  "hf_..."},
-    {"DeepInfra",    "DeepInfraKey",    "..."},
-    {"GitHub Models","GithubKey",       "ghp_..."},
-    {"NVIDIA NIM",   "NvidiaKey",       "nvapi-..."},
-    {"Glhf.chat",    "GlhfKey",         "glhf_..."},
-    {"Hyperbolic",   "HyperbolicKey",   "..."},
-    {"Novita AI",    "NovitaKey",       "..."},
-    {"AI21 Labs",    "AI21Key",         "..."},
-    {"Kite API",     "KiteKey",         "..."},
-    {"Venice AI",    "VeniceKey",       "..."},
-}
-for _, ki in ipairs(keyInputs) do
-    local displayName, cfgKey, placeholder = ki[1], ki[2], ki[3]
-    local defaultVal = "YOUR_"..cfgKey:upper()
-    if defaultVal:sub(1,5) ~= "YOUR_" then defaultVal = "YOUR_"..cfgKey end
-    TabProvider:CreateInput({
-        name=displayName.." Key",
-        placeholder=(Cfg[cfgKey] and Cfg[cfgKey] ~= defaultVal and Cfg[cfgKey]:sub(1,4) ~= "YOUR") and "Saved ✓ re-enter to update" or placeholder,
-        callback=function(v) if v~="" then Cfg[cfgKey]=Trim(v); InvalidatePending(); SaveCfg() end end, forgetState=true})
-end
-
-TabProvider:CreateSection({ name = "System" })
-TabProvider:CreateButton({ name="🔄 Reset Setup for Next Run", callback=function()
-    Cfg.SetupComplete = false; SaveCfg()
-    SafeNotify({Title="Setup reset", Content="Execute the script again to open the wizard."})
-    Runtime.Stop()
-end })
-TabProvider:CreateButton({ name="❌ Unload Bot", callback=function()
-    SaveMemory(); SaveCfg()
-    Runtime.Stop()
-    warn("[AI Bot] Unloaded. Execute the script again to restart.")
-end })
-
-local TabDiagnostics = Win:CreateTab({name="Diagnostics", })
-TabDiagnostics:CreateText({name="Session", text="Use Refresh Status to inspect requests, queue depth, response time, and the last error."})
-TabDiagnostics:CreateButton({name="Refresh Status", callback=function()
-    local stats = Runtime.stats
-    SafeNotify({Title="Session status", Content=string.format(
-        "Provider: %s\nModel: %s\nQueue: %d / %d | Busy: %s\nRequests: %d | Replies: %d | Errors: %d\nSkipped: %d | Last response: %.1fs\nVision calls: %d | Cache hits: %d | Tool calls: %d\nLast error: %s",
-        Cfg.Provider, Cfg.Model, #MsgQueue, Cfg.QueueLimit, tostring(ProcessingMsg), stats.requests, stats.replies,
-        stats.errors, stats.dropped, stats.latency, stats.visionRequests, stats.visionCacheHits, stats.avatarToolCalls, stats.lastError), Duration=15})
-end})
-TabDiagnostics:CreateButton({name="Cancel Pending Replies", callback=function()
-    InvalidatePending(); UpdateBillboard(Cfg.Enabled and "ready" or "paused")
-    SafeNotify({Title="Queue cleared", Content="Pending replies have been cancelled."})
-end})
-TabDiagnostics:CreateSlider({name="Minimum gap between requests (seconds)", increment=1, range={1,60}, value=Cfg.GlobalCooldown, callback=function(value) Cfg.GlobalCooldown=value; SaveCfg() end, forgetState=true})
-TabDiagnostics:CreateSlider({name="Maximum queued messages", increment=1, range={1,50}, value=Cfg.QueueLimit, callback=function(value) Cfg.QueueLimit=value; SaveCfg() end, forgetState=true})
-TabDiagnostics:CreateSlider({name="Request timeout (seconds)", increment=5, range={5,120}, value=Cfg.RequestTimeout, callback=function(value) Cfg.RequestTimeout=value; SaveCfg() end, forgetState=true})
-TabDiagnostics:CreateSlider({name="Memory messages per conversation", increment=2, range={2,100}, value=Cfg.MemoryLimit, callback=function(value)
-    Cfg.MemoryLimit=value; NormalizeCfg()
-    History=CleanHistory(History); PrivateHistory=CleanHistory(PrivateHistory); InvalidatePending(); SaveMemory(); SaveCfg()
-end, forgetState=true})
-TabDiagnostics:CreateToggle({name="Remember conversations between runs", value=Cfg.RememberHistory, callback=function(value)
-    Cfg.RememberHistory=value; SaveCfg()
-    local ok, err = SaveMemory()
-    if not ok then SafeNotify({Title="Memory not saved", Content=err}) end
-end, forgetState=true})
-TabDiagnostics:CreateButton({name="Save Settings Now", callback=function()
-    local ok, err = SaveCfg()
-    SafeNotify({Title=ok and "Settings saved" or "Save failed", Content=ok and SAVE_FILE or err})
-end})
-TabDiagnostics:CreateText({name="Local commands", text="/ai on • /ai off • /ai clear • /ai model MODEL_ID • /ai status\nK toggles the control panel. Commands work where the game forwards local chat commands."})
-
-
-
--- ─── Emotes Tab ───
-local TabEmotes = Win:CreateTab({
-    name = "Emotes",
-})
-
-TabEmotes:CreateSection({ name = "Manual Triggers" })
-TabEmotes:CreateText({ name="AI Emote Tags", text="The AI can include tags in its replies that trigger animations. Tags are stripped from chat before sending." })
-TabEmotes:CreateSection({ name = "Play Emote" })
+-- ─── Emotes ───
+local TabEmotes = Win:CreateTab({ name = "Emotes" })
+TabEmotes:CreateSection({ name = "Play an emote" })
 local emoteList = {{"Wave","WAVE"},{"Dance 1","DANCE"},{"Dance 2","DANCE2"},{"Dance 3","DANCE3"},{"Laugh","LAUGH"},{"Point","POINT"},{"Cheer","CHEER"}}
 for _, e in ipairs(emoteList) do
     TabEmotes:CreateButton({ name=e[1], callback=function() PlayEmote(e[2]) end })
 end
-TabEmotes:CreateSection({ name = "Tag Reference" })
-TabEmotes:CreateText({ name="Available Tags", text="[WAVE] [DANCE] [DANCE2] [DANCE3] [LAUGH] [POINT] [CHEER]" })
+TabEmotes:CreateSection({ name = "AI emote tags" })
+TabEmotes:CreateText({ name="Available Tags", text="The AI can add one of these tags to a reply to play an animation. Tags are removed before the message is sent.\n\n[WAVE] [DANCE] [DANCE2] [DANCE3] [LAUGH] [POINT] [CHEER]" })
+
+-- ─── Settings: interface, memory, limits, help, save/unload ───
+local TabSettings = Win:CreateTab({ name = "Settings" })
+TabSettings:CreateSection({ name = "Interface" })
+TabSettings:CreateToggle({ name="Show Status Billboard", value=Cfg.ShowBillboard, callback=function(v) Cfg.ShowBillboard=v; UpdateBillboard(); SaveCfg() end, forgetState=true})
+local SETUP_STYLE_LABELS = { Auto = "Auto · match this device", Windows = "Windows 11", macOS = "macOS Liquid Glass" }
+TabSettings:CreateDropdown({name="Setup style", options={SETUP_STYLE_LABELS.Auto, SETUP_STYLE_LABELS.Windows, SETUP_STYLE_LABELS.macOS},
+    value=SETUP_STYLE_LABELS[Cfg.SetupStyle] or SETUP_STYLE_LABELS.Auto, multiSelect=false, forgetState=true, callback=function(value)
+    for key, label in pairs(SETUP_STYLE_LABELS) do if label == value then Cfg.SetupStyle = key end end
+    SaveCfg()
+end})
+TabSettings:CreateText({name="About setup style", text="Used the next time setup opens. Auto uses macOS Liquid Glass on Apple devices and Windows 11 everywhere else. Detected: "..(DEVICE_PLATFORM == "macos" and "Apple device" or DEVICE_PLATFORM == "windows" and "Windows" or "other / unknown")..". Current: "..SetupStyle().."."})
+
+TabSettings:CreateSection({ name = "Memory" })
+TabSettings:CreateSlider({name="Memory messages per conversation", increment=2, range={2,100}, value=Cfg.MemoryLimit, callback=function(value)
+    Cfg.MemoryLimit=value; NormalizeCfg()
+    History=CleanHistory(History); PrivateHistory=CleanHistory(PrivateHistory); InvalidatePending(); SaveMemory(); SaveCfg()
+end, forgetState=true})
+TabSettings:CreateToggle({name="Remember conversations between runs", value=Cfg.RememberHistory, callback=function(value)
+    Cfg.RememberHistory=value; SaveCfg()
+    local ok, err = SaveMemory()
+    if not ok then SafeNotify({Title="Memory not saved", Content=err}) end
+end, forgetState=true})
+TabSettings:CreateButton({ name="Clear all conversation memory", callback=function()
+    ClearMemory(); SafeNotify({Title="Memory cleared", Content="Public and private conversation history wiped."})
+end })
+TabSettings:CreateButton({ name="Export public chat log", callback=function()
+    local ok, fn = ExportChatLog()
+    SafeNotify({Title=ok and "Log exported" or "Export failed", Content=ok and ("Saved to "..fn) or fn})
+end })
+
+TabSettings:CreateSection({ name = "Requests and queue" })
+TabSettings:CreateSlider({name="Minimum gap between requests (seconds)", increment=1, range={1,60}, value=Cfg.GlobalCooldown, callback=function(value) Cfg.GlobalCooldown=value; SaveCfg() end, forgetState=true})
+TabSettings:CreateSlider({name="Maximum queued messages", increment=1, range={1,50}, value=Cfg.QueueLimit, callback=function(value) Cfg.QueueLimit=value; SaveCfg() end, forgetState=true})
+TabSettings:CreateSlider({name="Request timeout (seconds)", increment=5, range={5,120}, value=Cfg.RequestTimeout, callback=function(value) Cfg.RequestTimeout=value; SaveCfg() end, forgetState=true})
+
+TabSettings:CreateSection({ name = "Help" })
+TabSettings:CreateText({name="Local commands", text="/ai on • /ai off • /ai clear • /ai model MODEL_ID • /ai status\nK toggles the control panel. Commands work where the game forwards local chat commands."})
+
+TabSettings:CreateSection({ name = "Save and unload" })
+TabSettings:CreateButton({name="Save Settings Now", callback=function()
+    local ok, err = SaveCfg()
+    SafeNotify({Title=ok and "Settings saved" or "Save failed", Content=ok and SAVE_FILE or err})
+end})
+TabSettings:CreateButton({ name="❌ Unload Bot", callback=function()
+    SaveMemory(); SaveCfg()
+    Runtime.Stop()
+    warn("[AI Bot] Unloaded. Execute the script again to restart.")
+end })
 -- ═══════════════════════════════════════
 -- INIT
 -- ═══════════════════════════════════════

@@ -11,6 +11,7 @@ function UDim2.fromScale(x,y) return UDim2.new(x,0,y,0) end
 function UDim2.fromOffset(x,y) return UDim2.new(0,x,0,y) end
 local UDim={new=dimension}; local Vector2={new=dimension}; local Vector3={new=dimension}
 local TweenInfo={new=dimension}; local ColorSequence={new=dimension}; local ColorSequenceKeypoint={new=dimension}
+local NumberSequence={new=dimension}; local NumberSequenceKeypoint={new=dimension}
 local nodes={}
 local Instance={}
 function Instance.new(class,parent)
@@ -20,7 +21,9 @@ function Instance.new(class,parent)
     local function event(name) if not events[name] then events[name]=signal() end; return events[name] end
     local methods={}
     function methods:GetChildren() return table.clone(children) end
-    function methods:IsA(name) return name==class or (name=="GuiObject" and (class=="Frame" or class=="TextButton" or class=="TextLabel" or class=="TextBox")) end
+    function methods:IsA(name) return name==class or (name=="GuiObject" and (class=="Frame" or class=="TextButton" or class=="TextLabel" or class=="TextBox" or class=="ScrollingFrame")) or (name=="GuiButton" and class=="TextButton") end
+    function methods:SetAttribute(key,value) properties["@"..key]=value end
+    function methods:GetAttribute(key) return properties["@"..key] end
     function methods:FindFirstChild(name) for _,child in ipairs(children) do if child.Name==name then return child end end end
     function methods:WaitForChild(name) return self:FindFirstChild(name) end
     function methods:FindFirstChildOfClass(name) for _,child in ipairs(children) do if child.ClassName==name then return child end end end
@@ -38,7 +41,7 @@ function Instance.new(class,parent)
         __index=function(_,key)
             if methods[key] then return methods[key] end
             if key=="_children" then return children end
-            if key=="Activated" or key=="SelectionGained" or key=="SelectionLost" or key=="Event" or key=="Destroying" or key=="AncestryChanged" or key:find("Mouse",1,true) or key=="Focused" or key=="FocusLost" then return event(key) end
+            if key=="Activated" or key=="InputBegan" or key=="InputEnded" or key=="InputChanged" or key=="SelectionGained" or key=="SelectionLost" or key=="Event" or key=="Destroying" or key=="AncestryChanged" or key:find("Mouse",1,true) or key=="Focused" or key=="FocusLost" then return event(key) end
             return properties[key]
         end,
         __newindex=function(_,key,value)
@@ -127,44 +130,41 @@ assert(find("Name","AIBotSetup"))
 local providerSearch=find("Name","ProviderSearch")
 local function visibleProviders()
     local visible={}
-    for _,row in ipairs(find("Name","ProviderList"):GetChildren()) do
-        if row.Name:find("ProviderRow_",1,true) and row.Visible then table.insert(visible,row) end
+    for _,node in ipairs(nodes) do
+        if not node.destroyed and type(node.Name)=="string" and node.Name:find("ProviderRow_",1,true)==1 and node.Visible then table.insert(visible,node) end
     end
     return visible
 end
+local function selected(name) return find("Name",name):FindFirstChild("SelectedMark"):GetAttribute("Selected")==true end
+local function switchState(name) return find("Name",name):FindFirstChild("Switch"):FindFirstChild("State").Text end
 local initialRows=visibleProviders()
 providerSearch.Text="["
 assert(find("Name","ProviderEmptyState").Visible and #visibleProviders()==0,"Literal search should show an empty state")
 click(find("Name","ResetProviderFilters"))
 assert(#visibleProviders()==#initialRows and not find("Name","ProviderEmptyState").Visible)
-assert(find("Name","ProviderFilters").Position.Y.Offset==0,"Wide layouts keep filters beside search")
 click(find("Name","ProviderFilter_Local"))
 assert(#visibleProviders()==1 and visibleProviders()[1].Name=="ProviderRow_lmstudio")
-assert(find("Name","ProviderFilter_Local").Text:find(">1<",1,true),"Filter chips show live match counts")
 assert(find("Name","ProviderResultCount").Text:find("^1 of "))
 click(find("Name","ProviderFilter_Vision"))
 assert(#visibleProviders()>0)
 assert(not find("Name","ProviderRow_groq").Visible)
 click(find("Name","ProviderFilter_All"))
 providerSearch.Text="groq"
-click(find("Name","SelectProvider_groq"))
-assert(find("Name","SelectedProviderName").Text=="Groq","Details must update after selection")
-assert(find("Name","SelectedProviderAuth").Text:find("API key required",1,true))
+click(find("Name","ProviderRow_groq"))
+assert(selected("ProviderRow_groq") and not selected("ProviderRow_pollinations"),"Selection must move to the clicked row")
 local row=find("Name","ProviderRow_groq")
 providerSearch.Text="llama-3.1"
 assert(row==find("Name","ProviderRow_groq"),"Filtering must reuse rows")
 assert(row.Visible,"Search should match model IDs")
 assert(row:FindFirstChild("ProviderDetail").Text=="Matches llama-3.1-8b-instant","Model-ID matches should name the model")
-assert(row:FindFirstChild("SelectedMark").Visible,"Selected tile shows its mark")
 click(find("Name","ClearProviderSearch"))
 assert(providerSearch.Text=="" and #visibleProviders()==#initialRows)
-assert(row:FindFirstChild("ProviderDetail").Text:find("suggested models",1,true),"Clearing search restores the tile summary")
+assert(row:FindFirstChild("ProviderDetail").Text:find("API key required",1,true),"Clearing search restores the row summary")
 providerSearch.Text="cerebras"; providerSearch.FocusLost:Fire(true)
-assert(find("Name","SelectedProviderName").Text=="Cerebras","Enter should select the first result")
-assert(not row:FindFirstChild("SelectedMark").Visible)
-providerSearch.Text=""; click(find("Name","SelectProvider_groq"))
+assert(selected("ProviderRow_cerebras") and not selected("ProviderRow_groq"),"Enter should select the first result")
+providerSearch.Text=""; click(find("Name","ProviderRow_groq"))
 -- Clicking an already-selected provider must preserve the model when revisiting step 1.
-click(find("Name","SelectProvider_groq"))
+click(find("Name","ProviderRow_groq"))
 click(find("Name","SetupContinue"))
 -- Required auth stays on the connection step with an inline error.
 click(find("Name","SetupContinue"))
@@ -180,16 +180,16 @@ modelSearch.Text="["; modelSearch.Text="8b"
 click(find("Name","Model_2"))
 -- Model selection survives revisiting provider and connection screens.
 click(find("Name","SetupBack")); click(find("Name","SetupBack"))
-click(find("Name","SelectProvider_groq"))
+click(find("Name","ProviderRow_groq"))
 click(find("Name","SetupContinue")); click(find("Name","SetupContinue"))
 assert(find("Name","ManualModelID").Text=="llama-3.1-8b-instant")
 click(find("Name","SetupContinue"))
 click(find("Name","Personality_Sarcastic"))
 click(find("Name","SetupContinue"))
 assert(find("Name","SetupPage_5").Visible and find("Name","SetupContinue").Text=="Start bot · text only")
-assert(find("Name","SetupVoice_Remember voice API keys on this device_Toggle").Text:find("✓",1,true))
+assert(switchState("SetupVoice_Remember voice API keys on this device_Toggle")=="On")
 click(find("Name","SetupVoice_Remember voice API keys on this device_Toggle"))
-click(find("Name","SetupNav_2")); assert(find("Name","RememberSetupKeys").Text:find("○",1,true))
+click(find("Name","SetupNav_2")); assert(switchState("RememberSetupKeys")=="Off","Voice and chat key storage share one preference")
 click(find("Name","SetupNav_5"))
 click(find("Name","SetupContinue")); advance(2)
 assert(bot and bot.runtime.ready,"Wizard did not finish")
@@ -198,6 +198,21 @@ assert(bot.cfg.GroqKey=="test-key","Groq key not saved")
 assert(bot.cfg.SystemPrompt:find("sarcastic",1,true),"Personality click did not change selection")
 assert(controls["Refresh Status"] and controls["Cancel Pending Replies"])
 assert(controls["Test Connection (private)"])
+-- Reorganized panel: presets sync the prompt, player lists normalize, one picker sets any provider key.
+controls["Personality preset"].Callback("😏 Sarcastic")
+assert(controls["System prompt"].value:find("sarcastic",1,true),"Choosing a preset fills the prompt box")
+controls["System prompt"].Callback("Talk like a robot.")
+assert(controls["Personality preset"].value=="✏️ Custom","Editing the prompt marks it Custom")
+controls["Add to whitelist"].Callback("  @Visitor ")
+controls["Add to whitelist"].Callback("visitor")
+assert(#bot.cfg.Whitelist==1 and bot.cfg.Whitelist[1]=="visitor","Names are trimmed, lowercased and unique")
+assert(controls["Current lists"].text:find("visitor",1,true))
+controls["Remove from lists"].Callback("VISITOR"); assert(#bot.cfg.Whitelist==0)
+controls["Provider to update"].Callback("Mistral")
+controls["API key for selected provider"].Callback("mistral-panel-key")
+assert(bot.cfg.MistralKey=="mistral-panel-key" and controls["Key storage"].text:find("Mistral",1,true))
+assert(controls["Provider to update"].value=="Groq","The key picker starts on the active provider")
+assert(not controls["Custom endpoint / base URL"],"Custom endpoint controls only appear for custom providers")
 controls["Model ID"].Callback("new-model")
 assert(bot.cfg.Model=="new-model" and bot.cfg.GeminiModel=="new-model")
 controls["Refresh Status"].Callback()
@@ -206,14 +221,14 @@ controls["❌ Unload Bot"].Callback()
 assert(not bot.runtime.alive)
 print("PASS provider selector: filters, model search, empty/reset states, persistent selection, stable rows")
 print("PASS full wizard: literal searches, filtered model selection, Groq key, personality, launch")
-print("PASS control panel: diagnostics, model editing, unload")
+print("PASS control panel: status, model editing, preset/prompt sync, player lists, key picker, unload")
 
 -- A fresh custom-provider wizard discovers models after collecting connection details.
 local function startFreshWizard()
     files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil
     services.CoreGui=Instance.new("Folder")
     task.spawn(function() bot=bootUI() end); advance(1)
-    click(find("Name","SelectProvider_custom")); click(find("Name","SetupContinue"))
+    click(find("Name","ProviderRow_custom")); click(find("Name","SetupContinue"))
     assert(find("Name","SetupCustomEndpoint").Visible,"Custom connection must precede model selection")
 end
 local discoveryVersion=1
@@ -310,11 +325,10 @@ startFreshWizard()
 local gui=find("Name","AIBotSetup")
 gui.AbsoluteSize={X=390,Y=700}
 assert(find("Name","SetupWindow").Size.X.Offset==420)
-assert(find("Name","ProviderFilters").Position.Y.Offset==48,"Compact filters stack below search")
-assert(find("Name","ProviderFilter_All").Text=="All","Compact chips drop counts")
-assert(not find("Name","ConnectionGuide").Visible)
-assert(find("Name","PersonalityEditor").Position.Y.Offset==236)
-assert(find("Name","Personality_Sarcastic").Size.X.Scale==0.5)
+assert(not find("Name","SetupNav_2"):FindFirstChild("Label").Visible,"Compact navigation shows icons only")
+assert(find("Name","NavigationPane").Size.X.Offset==52)
+assert(find("Name","ConnectionGuide").Visible)
+assert(find("Name","PersonalityPresets"):FindFirstChildOfClass("UIGridLayout").CellSize.X.Scale==0.5,"Presets reflow to two columns")
 find("Name","SetupCustomEndpoint").Text="https://narrow.example/v1"
 click(find("Name","SetupContinue")); advance(0.1)
 click(find("Name","CloseSetup")); advance(3)
@@ -325,8 +339,8 @@ print("PASS responsive setup: compact connection/presets, scrolling, close cance
 files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil; transport=nil
 services.CoreGui=Instance.new("Folder")
 task.spawn(function() bot=bootUI() end); advance(1)
-click(find("Name","SelectProvider_unclose")); click(find("Name","SetupContinue"))
-assert(not find("Name","SetupAPIKey").Visible)
+click(find("Name","ProviderRow_unclose")); click(find("Name","SetupContinue"))
+assert(not pcall(find,"Name","SetupAPIKey"),"Keyless providers have no key field")
 click(find("Name","SetupContinue"))
 find("Name","ManualModelID").Text="test-keyless-model"
 click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); click(find("Name","SetupContinue")); advance(2)
@@ -455,7 +469,7 @@ local function startVoiceWizard()
     files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil; transport=nil
     services.CoreGui=Instance.new("Folder")
     task.spawn(function() bot=bootUI() end); advance(1)
-    click(find("Name","SelectProvider_unclose")); click(find("Name","SetupContinue"))
+    click(find("Name","ProviderRow_unclose")); click(find("Name","SetupContinue"))
     click(find("Name","SetupContinue")); find("Name","ManualModelID").Text="setup-chat-model"
     click(find("Name","SetupContinue")); click(find("Name","SetupContinue"))
     assert(find("Name","SetupPage_5").Visible and bot==nil)
@@ -469,14 +483,17 @@ local function voiceChoice(name,value)
     click(find("Name",voiceName(name,"Option_"..value)))
 end
 local function voiceText(name)
-    for _,child in ipairs(find("Name","SetupVoice_"..name):GetChildren()) do
-        if child.ClassName=="TextLabel" and child.Position.Y.Offset==28 then return child.Text end
+    local function search(node)
+        for _,child in ipairs(node:GetChildren()) do
+            if child.Name=="Body" then return child.Text end
+            local found=search(child); if found then return found end
+        end
     end
-    error("Missing voice text: "..name)
+    return search(find("Name","SetupVoice_"..name)) or error("Missing voice text: "..name)
 end
 startVoiceWizard()
 voiceToggle("Speak public AI replies")
-assert(find("Name",voiceName("Speak public AI replies","Toggle")).Text:find("○",1,true))
+assert(switchState(voiceName("Speak public AI replies","Toggle"))=="Off")
 assert(find("Name","SetupContinue").Text=="Start bot · text only")
 assert(voiceText("Voice output status"):find("pairing key",1,true))
 voiceInput("Helper pairing key","setup-helper-key")
@@ -540,7 +557,7 @@ print("PASS initial voice setup: pairing, masks, devices, custom catalog, privat
 -- cancel the helper's audio without writing a partial setup to disk.
 startVoiceWizard()
 local voiceGui=find("Name","AIBotSetup"); voiceGui.AbsoluteSize={X=390,Y=700}
-assert(find("Name","SetupNav_5").Text=="5  Voice" and find("Name","SetupVoiceForm").Visible)
+assert(find("Name","SetupNav_5"):FindFirstChild("Label").Text=="Voice" and find("Name","SetupVoiceForm").Visible)
 voiceInput("Helper pairing key","setup-helper-key")
 voiceChoice("TTS provider","Custom (OpenAI-compatible)")
 voiceInput("Custom TTS endpoint / base URL","https://setup-speech.example/v1")
@@ -578,9 +595,62 @@ end
 voiceButton("Check helper / Refresh output devices"); advance(1)
 voiceChoice("Speech output device","Test :: Cable · virtual mic")
 voiceToggle("Remember voice API keys on this device")
-assert(find("Name","RememberSetupKeys").Text:find("✓",1,true))
+assert(switchState(voiceName("Remember voice API keys on this device","Toggle"))=="On")
 voiceButton("Fetch / Refresh TTS models and voices")
 voiceButton("Test selected voice"); click(find("Name","CloseSetup")); advance(3)
 assert(voiceGui.destroyed and not environment.AIChatBotRuntime.alive and bot==nil)
 assert(closedRequests>0 and not files["aichatbot_cfg_v3.json"])
 print("PASS initial voice setup cancellation: compact layout, stale catalogs, key redaction, storage preference, manual IDs and close during a voice test")
+
+-- Apple devices get the macOS Liquid Glass skin over the same controller.
+files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil; transport=nil
+services.CoreGui=Instance.new("Folder"); services.Lighting=Instance.new("Folder")
+services.UserInputService={GetPlatform=function() return Enum.Platform.OSX end,InputBegan=signal(),InputChanged=signal(),InputEnded=signal()}
+task.spawn(function() bot=bootUI() end); advance(1)
+local macGui=find("Name","AIBotSetup")
+assert(find("Name","Sidebar") and find("Name","SearchCapsule").Visible,"Apple devices get the macOS skin")
+assert(services.Lighting:FindFirstChild("AIBotSetupBlur"),"Liquid Glass blurs the scene behind the window")
+local macSearch=find("Name","ProviderSearch"); macSearch.Text="mistral"; advance(0.1)
+assert(find("Name","ProviderRow_mistral").Visible and not find("Name","ProviderRow_groq").Visible)
+assert(find("Name","ProviderRow_huggingface"):FindFirstChild("ProviderDetail").Text:find("mistralai",1,true),"Model matches name the model")
+assert(find("Name","ClearProviderSearch").Visible)
+click(find("Name","ProviderRow_mistral")); assert(selected("ProviderRow_mistral"))
+click(find("Name","ClearProviderSearch")); assert(#visibleProviders()==#initialRows)
+click(find("Name","SetupContinue"))
+assert(not find("Name","SearchCapsule").Visible and find("Name","SetupHeading").Text=="Connect Mistral")
+click(find("Name","SetupContinue")); assert(find("Name","SetupError").Text:find("API key",1,true))
+find("Name","SetupAPIKey").Text="mistral-key"; assert(find("Name","SetupAPIKey").TextTransparency==1)
+click(find("Name","RememberSetupKeys")); assert(switchState("RememberSetupKeys")=="On")
+find("Name","SetupAPIKey").FocusLost:Fire(true); advance(0.2)
+assert(find("Name","SetupPage_3").Visible,"Enter in the key field continues")
+click(find("Name","Model_3")); assert(find("Name","ManualModelID").Text=="mistral-large-latest")
+assert(find("Name","Model_3"):FindFirstChild("SelectedMark"):GetAttribute("Selected"))
+click(find("Name","SetupContinue"))
+click(find("Name","PersonalityPresetPicker")); assert(find("Name","PersonalityPresetPickerMenu").Visible)
+click(find("Name","Personality_Chill")); assert(not find("Name","PersonalityPresetPickerMenu").Visible)
+assert(find("Name","SetupSystemPrompt").Text:find("chill",1,true))
+click(find("Name","SetupContinue"))
+assert(find("Name","SetupContinue").Text=="Start bot · text only")
+click(find("Name","SetupVoice_TTS provider_Picker")); click(find("Name","SetupVoice_TTS provider_Option_ElevenLabs"))
+click(find("Name","SetupNav_3")); assert(find("Name","ManualModelID").Text=="mistral-large-latest")
+click(find("Name","NavForward")); click(find("Name","NavForward")); assert(find("Name","SetupPage_5").Visible)
+click(find("Name","Minimize")); advance(1)
+assert(find("Name","RestoreSetup").Visible and not find("Name","SetupWindow").Visible)
+click(find("Name","RestoreSetup")); advance(0.5); assert(find("Name","SetupWindow").Visible)
+click(find("Name","SetupContinue")); advance(2)
+assert(bot and bot.runtime.ready and bot.cfg.Provider=="mistral" and bot.cfg.Model=="mistral-large-latest")
+assert(bot.cfg.MistralKey=="mistral-key" and bot.cfg.SaveAPIKeys and bot.cfg.SystemPrompt:find("chill",1,true))
+assert(bot.cfg.TTSProvider=="elevenlabs")
+assert(macGui.destroyed and not services.Lighting:FindFirstChild("AIBotSetupBlur"),"Closing setup removes the blur")
+assert(controls["Voice setup platform"].value=="macOS (BlackHole)","The voice guide starts on the detected platform")
+controls["Setup style"].Callback("Windows 11"); assert(bot.cfg.SetupStyle=="Windows")
+controls["❌ Unload Bot"].Callback()
+-- A saved override wins over detection.
+files={}; environment={}; scheduled={}; nodes={}; controls={}; notifications={}; bot=nil
+files["aichatbot_cfg_v3.json"]=HttpService:JSONEncode({SetupStyle="Windows"})
+services.CoreGui=Instance.new("Folder")
+task.spawn(function() bot=bootUI() end); advance(1)
+assert(find("Name","NavigationPane") and not pcall(find,"Name","Sidebar"),"SetupStyle=Windows overrides an Apple device")
+click(find("Name","SetupCancel")); advance(1)
+services.UserInputService=nil; services.Lighting=nil
+print("PASS macOS Liquid Glass setup: device detection, blur lifecycle, radio rows, secure key, switch, Enter submit, pop-up presets and voice menus, toolbar navigation, dock minimize, launch, style override")
